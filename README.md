@@ -1,70 +1,81 @@
 # nanoqwen
 
-nanoqwen is a small, readable Qwen-style language model project. The shape is
-inspired by nanochat, the core training loop stays close to nanoGPT, and the
-model naming follows Hugging Face Transformers so checkpoints can move between
-the tiny codebase and the wider Qwen ecosystem.
+nanoqwen 是一个小型、可读的 Qwen 风格语言模型项目。项目结构参考
+`nanoGPT` 的简洁训练路径，也吸收了 `nanochat` 的端到端实验组织方式；真实
+Qwen 权重加载和命名则尽量贴近 Hugging Face Transformers，方便做权重对齐和
+生成结果校验。
 
-The project is intentionally not a replacement for `transformers`. It is a
-minimal experimental harness for learning, debugging, and training compact
-Qwen-like causal language models end to end.
+这个项目的重点不是替代 `transformers`，而是提供一个易读的实验仓库：
 
-## Design
+- 用 `nanoqwen/model.py` 训练和调试小型 Qwen-like decoder-only 模型；
+- 用手写 PyTorch 实现加载本地 Qwen3/Qwen3.5 文本 LLM 权重；
+- 用 Transformers 只做 tokenizer、chat template、权重来源和结果对照。
 
-- **Readable first**: the model and scripts are plain PyTorch with few layers of
-  indirection.
-- **Qwen-compatible names**: modules use names such as
-  `model.layers.0.self_attn.q_proj` to keep weight import/export simple.
-- **End-to-end path**: base training, SFT, evaluation, sampling, chat, and future RL stages
-  live as small scripts rather than a large framework.
-- **Tiny smoke tests**: the default local workflow uses a byte tokenizer and a
-  very small model, so basic behavior can be tested without downloading a Qwen
-  checkpoint.
+## 当前目标
 
-## Layout
+项目现在支持两条模型路径：
+
+- `Qwen3-0.6B`：手写 text-only causal LM，代码在
+  `nanoqwen/qwen3_model.py`。
+- `Qwen3.5-0.8B`：手写 text-only causal LM，代码在
+  `nanoqwen/qwen35_model.py`。
+
+注意：Qwen3.5 的公开 checkpoint 里包含多模态和 MTP 相关权重，但 nanoqwen
+当前只实现并加载文本 LLM 部分，不实现视觉、多模态输入或 MTP。
+
+## 设计原则
+
+- **可读优先**：模型、训练、评估、采样脚本尽量保持 plain PyTorch。
+- **命名兼容**：权重名保持类似 `model.layers.0.self_attn.q_proj`，方便和 HF
+  checkpoint 对齐。
+- **手写模型路径**：`qwen3_model.py` 和 `qwen35_model.py` 不包装
+  `AutoModelForCausalLM`；HF 模型只在 compare 脚本里作为对照。
+- **小测试可跑**：默认测试使用 byte tokenizer 和 tiny 模型，不需要下载真实
+  Qwen 权重。
+- **结果可验证**：下载真实权重后，可以用 compare smoke 验证手写模型和
+  Transformers 在确定性生成下输出一致。
+
+## 项目结构
 
 ```text
 nanoqwen/
-  config.py        # small dataclass config with Qwen-style fields
-  model.py         # Qwen-like decoder-only causal LM
-  qwen3_model.py   # hand-written Qwen3-0.6B text-only model
-  qwen35_model.py  # hand-written Qwen3.5-0.8B text-only model
-  manual_text.py   # shared manual-model tokenizer/generation utilities
-  generation.py    # greedy/top-k/top-p sampling helpers
-  hf_text.py       # chat-template helpers and HF comparison generation kwargs
-  hf_multimodal.py # helpers for local HF multimodal model prompts
-  tokenizer.py     # byte tokenizer plus optional HF tokenizer wrapper
-  data.py          # packed token dataset for training
-  sft.py           # assistant-masked supervised fine-tuning dataset
-  dpo.py           # preference dataset and DPO loss
-  eval.py          # loss/perplexity and prompt exact-match evaluation
-  report.py        # checkpoint reports
-  checkpoint.py    # native save/load plus HF-style import/export helpers
-  ui.html          # static chat UI served by scripts/chat_web.py
+  config.py        # Qwen-like 配置 dataclass
+  model.py         # 可训练的小型 Qwen-like decoder-only causal LM
+  qwen3_model.py   # 手写 Qwen3-0.6B text-only 模型加载与推理
+  qwen35_model.py  # 手写 Qwen3.5-0.8B text-only 模型加载与推理
+  manual_text.py   # 手写模型共用的 tokenizer、dtype、generation 工具
+  hf_text.py       # chat template、tokenizer 加载、HF 对照生成参数
+  hf_multimodal.py # 可选 HF 多模态 prompt 辅助；不是核心 LLM 实现
+  tokenizer.py     # byte tokenizer 和可选 HF tokenizer wrapper
+  generation.py    # greedy/top-k/top-p 采样工具
+  data.py          # packed token dataset
+  sft.py           # assistant-masked SFT 数据集
+  dpo.py           # preference dataset 和 DPO loss
+  eval.py          # loss/perplexity、prompt exact-match 评估
+  checkpoint.py    # native checkpoint 保存/加载和 HF-style import/export
+  report.py        # checkpoint 报告
+  ui.html          # scripts/chat_web.py 使用的静态聊天页面
+
 scripts/
-  train.py         # nanoGPT-style training loop
-  eval.py          # checkpoint evaluation
-  report.py        # checkpoint report generation
-  sample.py        # prompt completion
-  chat_cli.py      # simple terminal chat
-  chat_web.py      # local browser chat UI
-  hf_smoke.py      # HF config/tokenizer/optional weight import smoke
-  qwen_llm_generate.py # family-selecting Qwen3/Qwen3.5 text-only generation
-  qwen_llm_compare.py # compare hand-written models to direct Transformers
-  qwen3_llm_generate.py # local Qwen3-0.6B hand-written text generation
-  qwen3_compare.py # compare hand-written Qwen3 to direct Transformers
-  qwen35_llm_generate.py # local Qwen3.5-0.8B hand-written text generation
-  qwen35_generate.py # optional local Qwen3.5-0.8B multimodal Transformers generation
-  qwen35_compare.py # compare hand-written Qwen3.5 to direct Transformers
-  sft.py           # supervised fine-tuning on text/messages JSONL
-  dpo.py           # preference tuning with DPO
-  import_hf.py     # import compatible HF Qwen checkpoints
-  export_hf.py     # export a native checkpoint in HF-style format
-examples/
-  sft_tiny.jsonl
-  preferences_tiny.jsonl
-  prompts_tiny.jsonl
-  multiple_choice_tiny.jsonl
+  train.py             # nanoGPT 风格训练循环
+  sample.py            # 从 native checkpoint 采样
+  eval.py              # checkpoint 评估
+  report.py            # checkpoint 报告生成
+  chat_cli.py          # 本地终端聊天
+  chat_web.py          # 本地浏览器聊天 UI
+  import_hf.py         # 导入兼容的 HF Qwen checkpoint
+  export_hf.py         # 导出 native checkpoint 为 HF-style 格式
+  hf_smoke.py          # HF config/tokenizer/可选权重导入 smoke
+  qwen_llm_generate.py # family-selecting 手写 Qwen3/Qwen3.5 文本生成
+  qwen_llm_compare.py  # 手写模型 vs 直接 Transformers 生成对照
+  qwen3_llm_generate.py
+  qwen3_compare.py
+  qwen35_llm_generate.py
+  qwen35_compare.py
+  qwen35_generate.py   # 可选 HF Qwen3.5 multimodal 生成，不是手写路径
+  sft.py
+  dpo.py
+
 runs/
   check.sh
   download_qwen3_06b.sh
@@ -75,94 +86,205 @@ runs/
   qwen35_dry_smoke.sh
   qwen35_text_smoke.sh
   qwen35_compare_smoke.sh
-  smoke.sh         # tiny CPU smoke training
+  smoke.sh
   eval_smoke.sh
   sft_smoke.sh
   dpo_smoke.sh
   report_smoke.sh
   chat_web.sh
   hf_local_smoke.sh
-  tiny.sh          # slightly larger local experiment
+
+examples/
+  sft_tiny.jsonl
+  preferences_tiny.jsonl
+  prompts_tiny.jsonl
+  multiple_choice_tiny.jsonl
+
 tests/
 ```
 
-## Quickstart
+## 安装
 
-Install the project in a virtual environment:
+建议使用 `uv`：
 
 ```bash
 uv sync --extra dev
 ```
 
-Text-only Qwen3/Qwen3.5 usage only needs the dev extra. For optional multimodal
-experiments such as `scripts/qwen35_generate.py`, also install the vision extra:
+只做 text-only Qwen3/Qwen3.5 手写模型推理和对照，`dev` extra 就够了。
+
+如果要运行可选的多模态 HF 脚本，例如 `scripts/qwen35_generate.py`，再安装：
 
 ```bash
 uv sync --extra dev --extra vision
 ```
 
-Run tests:
+## 基础检查
+
+运行单元测试：
 
 ```bash
 uv run pytest
 ```
 
-Run the fast project check:
+运行默认检查，也就是编译全部 Python 文件并执行 pytest：
 
 ```bash
 bash runs/check.sh
 ```
 
-Run the fuller local smoke suite:
+运行更完整的本地 smoke，包括 tiny 训练、评估、SFT、DPO、HF 本地导入导出和
+临时 web health check：
 
 ```bash
 bash runs/check.sh --smoke
 ```
 
-Include the downloaded Qwen3.5-0.8B Transformers path in the check:
+如果本地已经下载真实 Qwen 权重，可以加上：
 
 ```bash
-bash runs/check.sh --smoke --qwen35
-```
-
-Include both downloaded Qwen3-0.6B and Qwen3.5-0.8B Transformers paths:
-
-```bash
+bash runs/check.sh --qwen3
+bash runs/check.sh --qwen35
 bash runs/check.sh --qwen
 ```
 
-Run a tiny CPU smoke train:
+## 下载真实模型
+
+真实模型权重放在 `models/` 下，不提交到 git。
+
+下载 Qwen3-0.6B：
+
+```bash
+bash runs/download_qwen3_06b.sh
+```
+
+默认路径：
+
+```text
+models/Qwen/Qwen3-0.6B
+```
+
+下载 Qwen3.5-0.8B：
+
+```bash
+bash runs/download_qwen35_08b.sh
+```
+
+默认路径：
+
+```text
+models/Qwen/Qwen3.5-0.8B
+```
+
+## 手写 Qwen 推理
+
+先做 tokenizer/config dry-run，不加载大权重：
+
+```bash
+bash runs/qwen3_dry_smoke.sh
+bash runs/qwen35_dry_smoke.sh
+```
+
+运行短文本生成：
+
+```bash
+bash runs/qwen3_text_smoke.sh
+bash runs/qwen35_text_smoke.sh
+```
+
+也可以直接使用 family-selecting 入口：
+
+```bash
+uv run python scripts/qwen_llm_generate.py --family qwen3 --prompt "你好"
+uv run python scripts/qwen_llm_generate.py --family qwen35 --prompt "你好"
+```
+
+指定设备和 dtype：
+
+```bash
+uv run python scripts/qwen_llm_generate.py \
+  --family qwen3 \
+  --device cuda \
+  --dtype bfloat16 \
+  --prompt "用一句话介绍你自己"
+```
+
+## 如何确认输出一致
+
+对照脚本会同时运行：
+
+1. nanoqwen 的手写模型；
+2. 同一路径下由 Transformers 直接加载的 HF 模型。
+
+然后比较两边生成出的文本：
+
+```bash
+bash runs/qwen3_compare_smoke.sh
+bash runs/qwen35_compare_smoke.sh
+```
+
+或者手动运行：
+
+```bash
+uv run python scripts/qwen_llm_compare.py \
+  --family qwen3 \
+  --prompt "Say hello in one short sentence." \
+  --max-new-tokens 8 \
+  --temperature 0
+```
+
+当前“一致”主要指确定性生成，也就是 `temperature=0` 的 greedy 输出一致。
+采样模式会涉及随机数状态，不适合作为严格逐字节一致校验。
+
+## `model.py` 和两个真实 Qwen 文件的区别
+
+`nanoqwen/model.py` 是项目里的通用小模型实现，用于 tiny 训练、SFT、DPO、
+采样、HF-style import/export 等实验。它是 Qwen-like 结构，但不是专门绑定某个
+真实公开 checkpoint。
+
+`nanoqwen/qwen3_model.py` 是 Qwen3-0.6B 的手写加载路径。它复用
+`NanoqwenForCausalLM` 的 decoder-only 实现，读取本地 Qwen3 config 和
+`model.safetensors`，并要求权重名对齐。
+
+`nanoqwen/qwen35_model.py` 是 Qwen3.5-0.8B 的手写文本模型。它单独实现了
+Qwen3.5 text stack，包括 full attention、linear attention layer schedule、
+GatedDeltaNet、MRoPE 和对应 RMSNorm 变体。它只读取 checkpoint 里的
+`model.language_model.*` 文本权重。
+
+## 训练和评估
+
+运行 tiny CPU 训练：
 
 ```bash
 bash runs/smoke.sh
 ```
 
-Sample from the resulting checkpoint:
+从训练出的 checkpoint 采样：
 
 ```bash
 uv run python scripts/sample.py --checkpoint out/smoke --prompt "Qwen is"
 ```
 
-Evaluate the checkpoint:
+评估 checkpoint：
 
 ```bash
 bash runs/eval_smoke.sh
 ```
 
-Generate a checkpoint report:
+生成 checkpoint 报告：
 
 ```bash
 bash runs/report_smoke.sh
 ```
 
-Or write JSON:
+写出 JSON 报告：
 
 ```bash
 uv run python scripts/report.py --checkpoint out/smoke --format json --out out/smoke/report.json
 ```
 
-The eval script reports loss/perplexity by default and can also score prompt
-completion rows or multiple-choice rows:
+评估脚本默认输出 loss/perplexity，也可以评估 prompt completion 和
+multiple-choice：
 
 ```bash
 uv run python scripts/eval.py \
@@ -171,164 +293,105 @@ uv run python scripts/eval.py \
   --multiple-choice examples/multiple_choice_tiny.jsonl
 ```
 
-Run a tiny assistant-masked SFT smoke:
+运行 tiny assistant-masked SFT：
 
 ```bash
 bash runs/sft_smoke.sh
 ```
 
-Run a tiny DPO preference-tuning smoke:
+运行 tiny DPO：
 
 ```bash
 bash runs/dpo_smoke.sh
 ```
 
-Serve the browser chat UI:
+启动本地浏览器聊天 UI：
 
 ```bash
 bash runs/chat_web.sh
 ```
 
-Then open <http://127.0.0.1:8000>.
+然后打开：
 
-Check HF-style export/import locally:
+```text
+http://127.0.0.1:8000
+```
+
+## HF-style import/export
+
+检查本地 HF-style 导入导出：
 
 ```bash
 bash runs/hf_local_smoke.sh
 ```
 
-Check a real Hugging Face Qwen repo without downloading weights:
+只检查真实 HF repo 的 config/tokenizer，不下载权重：
 
 ```bash
 uv run python scripts/hf_smoke.py Qwen/Qwen3-0.6B
 ```
 
-Pass `--weights` only when you intentionally want to download and import the
-model weights.
+只有明确需要下载并导入权重时，才传 `--weights`。
 
-Download Qwen/Qwen3-0.6B into `models/Qwen/Qwen3-0.6B`:
+## 数据格式
 
-```bash
-bash runs/download_qwen3_06b.sh
-```
-
-Verify its local tokenizer without loading weights:
-
-```bash
-bash runs/qwen3_dry_smoke.sh
-```
-
-Run a short local text-only generation through the hand-written Qwen3 model:
-
-```bash
-bash runs/qwen3_text_smoke.sh
-```
-
-Verify that the hand-written Qwen3 model produces the same deterministic output
-as a direct Transformers call:
-
-```bash
-bash runs/qwen3_compare_smoke.sh
-```
-
-Download Qwen/Qwen3.5-0.8B into `models/Qwen/Qwen3.5-0.8B`:
-
-```bash
-bash runs/download_qwen35_08b.sh
-```
-
-This checkpoint includes multimodal and MTP weights, but nanoqwen loads only the
-text LLM weights. `qwen35_model.py` hand-implements the Qwen3.5 text stack,
-including its hybrid `linear_attention` / `full_attention` layer schedule and
-GatedDeltaNet linear-attention blocks.
-
-Verify its local tokenizer without loading weights:
-
-```bash
-bash runs/qwen35_dry_smoke.sh
-```
-
-Run a short local text-only generation through the hand-written Qwen3.5 model:
-
-```bash
-bash runs/qwen35_text_smoke.sh
-```
-
-Verify that the hand-written Qwen3.5 LLM produces the same deterministic output
-as a direct Transformers call:
-
-```bash
-bash runs/qwen35_compare_smoke.sh
-```
-
-The family-selecting entrypoints are also available:
-
-```bash
-uv run python scripts/qwen_llm_generate.py --family qwen3 --prompt "你好"
-uv run python scripts/qwen_llm_generate.py --family qwen35 --prompt "你好"
-```
-
-## Data Formats
-
-Base training expects a plain UTF-8 text file:
+基础训练使用普通 UTF-8 文本文件：
 
 ```bash
 uv run python scripts/train.py --data data.txt --out-dir out/base
 ```
 
-SFT expects JSONL. A row can contain free text, which trains all tokens:
+SFT 使用 JSONL。纯文本行会训练所有 token：
 
 ```json
 {"text":"nanoqwen is a tiny Qwen-style model project."}
 ```
 
-Or chat messages, where only assistant tokens are included in the loss:
+也可以使用 chat messages，此时只把 assistant token 计入 loss：
 
 ```json
 {"messages":[{"role":"user","content":"Say hello."},{"role":"assistant","content":"hello"}]}
 ```
 
-Multiple-choice eval rows use mean log probability of each answer choice:
+multiple-choice 评估使用每个候选答案的平均 log probability：
 
 ```json
 {"question":"The capital of France is","choices":[" Paris"," Berlin"],"answer":0}
 ```
 
-DPO expects preference JSONL. Rows can use a plain prompt:
+DPO 使用 preference JSONL，可以是纯 prompt：
 
 ```json
 {"prompt":"user: Say hello.\nassistant: ","chosen":"hello","rejected":"goodbye"}
 ```
 
-Or chat messages as the prompt context:
+也可以用 chat messages 作为 prompt 上下文：
 
 ```json
 {"messages":[{"role":"user","content":"What is this?"}],"chosen":"nanoqwen is a tiny Qwen-style model project.","rejected":"I cannot answer."}
 ```
 
-## Current Scope
+## 当前已实现
 
-Implemented:
+- Qwen-like decoder-only causal LM：RMSNorm、RoPE、GQA、SwiGLU MLP、可选
+  Q/K head norm、causal mask、next-token loss、KV cache。
+- native checkpoint 保存/加载。
+- byte-tokenized tiny 训练和采样。
+- HF-style import/export。
+- Qwen2/Qwen3 结构 parity 测试。
+- assistant-only SFT masking。
+- DPO preference tuning。
+- loss/perplexity、prompt exact-match、multiple-choice 评估。
+- 本地 web chat UI。
+- Markdown/JSON checkpoint 报告。
+- 手写 Qwen3-0.6B text-only 模型。
+- 手写 Qwen3.5-0.8B text-only 模型。
+- 手写模型和 Transformers 的确定性生成对照 smoke。
 
-- Qwen-style decoder-only causal LM with RMSNorm, RoPE, GQA, SwiGLU MLP, optional
-  Q/K head normalization, causal masking, next-token loss, and KV cache.
-- Native checkpoint save/load.
-- Byte-tokenized training and sampling scripts for local smoke tests.
-- HF-style import/export helpers for compatible Qwen state dicts.
-- Qwen2 and Qwen3 parity tests against `transformers`.
-- Assistant-only SFT masking for chat JSONL.
-- DPO preference tuning with a frozen reference model.
-- Loss/perplexity evaluation and prompt exact-match evaluation.
-- Multiple-choice scoring by answer-choice log probability.
-- Local web chat UI.
-- Checkpoint reporting in Markdown or JSON.
-- Hand-written Qwen3-0.6B and Qwen3.5-0.8B text-only model implementations that
-  load local HF safetensors.
-- Deterministic Qwen3 and Qwen3.5 generation parity smoke against direct
-  Transformers.
+## 非目标
 
-Future Extensions:
-
-- broader task suites beyond local JSONL tasks;
-- larger curated training/eval runs;
-- richer preference/RL post-training experiments.
+- 不实现 Qwen3.5 多模态视觉路径。
+- 不把 `qwen3_model.py` 或 `qwen35_model.py` 改成 HF wrapper。
+- 不把真实模型权重提交到仓库。
+- 不保证 sampling 输出和 Transformers 严格一致；严格对照请使用
+  `temperature=0`。
