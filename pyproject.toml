@@ -3,10 +3,10 @@ name = "nanoqwen"
 version = "0.1.0"
 description = "A small readable Qwen-style language model training harness."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 dependencies = [
-  "torch>=2.4",
+  "torch==2.8.0+cu129",
   "numpy>=1.26",
   "tqdm>=4.66",
 ]
@@ -23,8 +23,11 @@ hf = [
 ]
 vision = [
   "pillow>=10.0",
-  "torchvision>=0.19",
+  "torchvision==0.23.0+cu129",
 ]
+
+[[tool.uv.index]]
+url = "https://download.pytorch.org/whl/cu129"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

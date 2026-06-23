@@ -5,6 +5,7 @@ from pathlib import Path
 import torch
 from safetensors.torch import load_file
 
+from nanoqwen.attention import normalize_attn_implementation
 from nanoqwen.config import NanoqwenConfig
 from nanoqwen.manual_text import ManualLLM, first_existing_file, resolve_dtype
 from nanoqwen.model import NanoqwenForCausalLM
@@ -17,9 +18,16 @@ REQUIRED_FILES = ("config.json", "tokenizer_config.json", "model.safetensors")
 
 class Qwen3ForCausalLM(NanoqwenForCausalLM):
     @classmethod
-    def from_pretrained(cls, model_path: str = DEFAULT_MODEL_PATH, dtype: str = "auto") -> "Qwen3ForCausalLM":
+    def from_pretrained(
+        cls,
+        model_path: str = DEFAULT_MODEL_PATH,
+        dtype: str = "auto",
+        attn_implementation: str | None = None,
+    ) -> "Qwen3ForCausalLM":
         root = Path(model_path)
         config = NanoqwenConfig.from_json_file(root / "config.json")
+        if attn_implementation is not None:
+            config.attn_implementation = normalize_attn_implementation(attn_implementation)
         state = load_file(first_existing_file(root, ("model.safetensors",)), device="cpu")
         target_dtype = resolve_dtype(dtype, state["model.embed_tokens.weight"].dtype)
 
@@ -34,8 +42,19 @@ class Qwen3ForCausalLM(NanoqwenForCausalLM):
 class Qwen3LLM(ManualLLM):
     model_cls = Qwen3ForCausalLM
 
-    def __init__(self, model_path: str = DEFAULT_MODEL_PATH, device: str = "cpu", dtype: str = "auto") -> None:
-        super().__init__(model_path=model_path, device=device, dtype=dtype)
+    def __init__(
+        self,
+        model_path: str = DEFAULT_MODEL_PATH,
+        device: str = "cpu",
+        dtype: str = "auto",
+        attn_implementation: str = "eager",
+    ) -> None:
+        super().__init__(
+            model_path=model_path,
+            device=device,
+            dtype=dtype,
+            attn_implementation=attn_implementation,
+        )
 
 
 def missing_files(model_path: str = DEFAULT_MODEL_PATH) -> list[str]:

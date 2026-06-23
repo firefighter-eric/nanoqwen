@@ -8,6 +8,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from nanoqwen.attention import ATTN_IMPLEMENTATION_CHOICES
 from nanoqwen.qwen3_model import DEFAULT_MODEL_PATH as QWEN3_PATH
 from nanoqwen.qwen3_model import Qwen3LLM
 from nanoqwen.qwen35_model import DEFAULT_MODEL_PATH as QWEN35_PATH
@@ -36,6 +37,7 @@ def parse_args(default_family: str | None = None) -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--dtype", choices=["auto", "float32", "bfloat16", "float16"], default="auto")
+    parser.add_argument("--attn-implementation", choices=ATTN_IMPLEMENTATION_CHOICES, default="eager")
     return parser.parse_args()
 
 
@@ -45,6 +47,7 @@ def build_llm(args: argparse.Namespace):
         model_path=args.model or default_model_path,
         device=args.device,
         dtype=args.dtype,
+        attn_implementation=args.attn_implementation,
     )
 
 
