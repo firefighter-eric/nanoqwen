@@ -21,7 +21,7 @@ MODEL_FAMILIES = {
 
 
 def parse_args(default_family: str | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate with local Qwen text-only LLMs through Transformers.")
+    parser = argparse.ArgumentParser(description="Generate with local hand-written Qwen text-only LLMs.")
     if default_family is None:
         parser.add_argument("--family", choices=sorted(MODEL_FAMILIES), default="qwen3")
     else:

@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nanoqwen.hf_text import HFTextCausalLM
+import torch
+from safetensors.torch import load_file
+
+from nanoqwen.config import NanoqwenConfig
+from nanoqwen.manual_text import ManualLLM, first_existing_file, resolve_dtype
+from nanoqwen.model import NanoqwenForCausalLM
 
 MODEL_NAME = "qwen3"
 REPO_ID = "Qwen/Qwen3-0.6B"
@@ -10,7 +15,25 @@ DEFAULT_MODEL_PATH = "models/Qwen/Qwen3-0.6B"
 REQUIRED_FILES = ("config.json", "tokenizer_config.json", "model.safetensors")
 
 
-class Qwen3LLM(HFTextCausalLM):
+class Qwen3ForCausalLM(NanoqwenForCausalLM):
+    @classmethod
+    def from_pretrained(cls, model_path: str = DEFAULT_MODEL_PATH, dtype: str = "auto") -> "Qwen3ForCausalLM":
+        root = Path(model_path)
+        config = NanoqwenConfig.from_json_file(root / "config.json")
+        state = load_file(first_existing_file(root, ("model.safetensors",)), device="cpu")
+        target_dtype = resolve_dtype(dtype, state["model.embed_tokens.weight"].dtype)
+
+        model = cls(config)
+        model.to(dtype=target_dtype)
+        missing, unexpected = model.load_state_dict(state, strict=False)
+        if missing or unexpected:
+            raise RuntimeError(f"Qwen3 weight load mismatch: missing={missing}, unexpected={unexpected}")
+        return model
+
+
+class Qwen3LLM(ManualLLM):
+    model_cls = Qwen3ForCausalLM
+
     def __init__(self, model_path: str = DEFAULT_MODEL_PATH, device: str = "cpu", dtype: str = "auto") -> None:
         super().__init__(model_path=model_path, device=device, dtype=dtype)
 

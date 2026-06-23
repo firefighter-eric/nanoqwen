@@ -7,6 +7,8 @@ def test_qwen_model_files_have_separate_defaults() -> None:
     assert qwen3_model.REPO_ID == "Qwen/Qwen3-0.6B"
     assert qwen35_model.REPO_ID == "Qwen/Qwen3.5-0.8B"
     assert qwen3_model.DEFAULT_MODEL_PATH != qwen35_model.DEFAULT_MODEL_PATH
+    assert qwen3_model.Qwen3LLM.model_cls is qwen3_model.Qwen3ForCausalLM
+    assert qwen35_model.Qwen35LLM.model_cls is qwen35_model.Qwen35ForCausalLM
 
 
 def test_qwen3_missing_files_reports_required_files(tmp_path) -> None:
