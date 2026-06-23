@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>nanoqwen</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7f8fa;
+        --panel: #ffffff;
+        --panel-2: #eef1f5;
+        --text: #111827;
+        --muted: #667085;
+        --border: #d7dce3;
+        --accent: #0f766e;
+        --accent-2: #134e4a;
+        --danger: #b42318;
+        --shadow: 0 16px 40px rgba(16, 24, 40, 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      button,
+      input,
+      textarea {
+        font: inherit;
+      }
+
+      .app {
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        min-height: 100vh;
+      }
+
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 14px 18px;
+        border-bottom: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.88);
+        backdrop-filter: blur(10px);
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .mark {
+        display: grid;
+        width: 28px;
+        height: 28px;
+        place-items: center;
+        border-radius: 6px;
+        background: var(--accent);
+        color: white;
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 650;
+        letter-spacing: 0;
+      }
+
+      .status {
+        min-width: 80px;
+        color: var(--muted);
+        font-size: 13px;
+        text-align: right;
+      }
+
+      main {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 280px;
+        min-height: 0;
+      }
+
+      .conversation {
+        min-height: 0;
+        overflow: auto;
+        padding: 24px;
+      }
+
+      .messages {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        max-width: 860px;
+        margin: 0 auto;
+      }
+
+      .message {
+        display: grid;
+        grid-template-columns: 72px minmax(0, 1fr);
+        gap: 12px;
+        align-items: start;
+      }
+
+      .role {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
+        text-align: right;
+      }
+
+      .bubble {
+        width: fit-content;
+        max-width: min(100%, 720px);
+        padding: 12px 14px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--panel);
+        box-shadow: 0 1px 0 rgba(16, 24, 40, 0.02);
+        font-size: 15px;
+        line-height: 1.55;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      .message.user .bubble {
+        margin-left: auto;
+        border-color: #a8dad5;
+        background: #effaf8;
+      }
+
+      aside {
+        border-left: 1px solid var(--border);
+        background: var(--panel);
+        padding: 18px;
+      }
+
+      .controls {
+        display: grid;
+        gap: 16px;
+      }
+
+      .field {
+        display: grid;
+        gap: 7px;
+      }
+
+      label {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      input {
+        width: 100%;
+        height: 38px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 8px 10px;
+        background: #fff;
+        color: var(--text);
+      }
+
+      footer {
+        border-top: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.9);
+        padding: 14px 18px;
+      }
+
+      form {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        max-width: 980px;
+        margin: 0 auto;
+      }
+
+      textarea {
+        width: 100%;
+        min-height: 48px;
+        max-height: 160px;
+        resize: vertical;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px 13px;
+        background: #fff;
+        color: var(--text);
+        line-height: 1.4;
+      }
+
+      button {
+        min-width: 88px;
+        height: 48px;
+        border: 0;
+        border-radius: 8px;
+        background: var(--accent);
+        color: #fff;
+        font-size: 14px;
+        font-weight: 650;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: var(--accent-2);
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      .error {
+        color: var(--danger);
+      }
+
+      @media (max-width: 760px) {
+        main {
+          grid-template-columns: 1fr;
+        }
+
+        aside {
+          display: none;
+        }
+
+        .conversation {
+          padding: 16px 12px;
+        }
+
+        .message {
+          grid-template-columns: 1fr;
+          gap: 6px;
+        }
+
+        .role {
+          text-align: left;
+        }
+
+        form {
+          grid-template-columns: 1fr;
+        }
+
+        button {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <header>
+        <div class="brand">
+          <div class="mark">nq</div>
+          <h1>nanoqwen</h1>
+        </div>
+        <div id="status" class="status">ready</div>
+      </header>
+
+      <main>
+        <section id="conversation" class="conversation">
+          <div id="messages" class="messages"></div>
+        </section>
+        <aside>
+          <div class="controls">
+            <div class="field">
+              <label for="maxNewTokens">max tokens</label>
+              <input id="maxNewTokens" type="number" min="1" max="1024" value="160" />
+            </div>
+            <div class="field">
+              <label for="temperature">temperature</label>
+              <input id="temperature" type="number" min="0" max="2" step="0.05" value="0.8" />
+            </div>
+            <div class="field">
+              <label for="topK">top-k</label>
+              <input id="topK" type="number" min="0" max="500" value="50" />
+            </div>
+          </div>
+        </aside>
+      </main>
+
+      <footer>
+        <form id="form">
+          <textarea id="input" name="message" rows="1" placeholder="Message"></textarea>
+          <button id="send" type="submit">Send</button>
+        </form>
+      </footer>
+    </div>
+
+    <script>
+      const messagesEl = document.getElementById("messages");
+      const conversationEl = document.getElementById("conversation");
+      const statusEl = document.getElementById("status");
+      const formEl = document.getElementById("form");
+      const inputEl = document.getElementById("input");
+      const sendEl = document.getElementById("send");
+      const maxNewTokensEl = document.getElementById("maxNewTokens");
+      const temperatureEl = document.getElementById("temperature");
+      const topKEl = document.getElementById("topK");
+
+      const messages = [
+        { role: "system", content: "You are nanoqwen, a concise assistant." },
+      ];
+
+      function renderMessage(role, content, isError = false) {
+        const row = document.createElement("div");
+        row.className = `message ${role}`;
+
+        const roleEl = document.createElement("div");
+        roleEl.className = "role";
+        roleEl.textContent = role;
+
+        const bubble = document.createElement("div");
+        bubble.className = isError ? "bubble error" : "bubble";
+        bubble.textContent = content;
+
+        row.append(roleEl, bubble);
+        messagesEl.appendChild(row);
+        conversationEl.scrollTop = conversationEl.scrollHeight;
+      }
+
+      async function sendMessage(content) {
+        messages.push({ role: "user", content });
+        renderMessage("user", content);
+        statusEl.textContent = "running";
+        sendEl.disabled = true;
+
+        try {
+          const response = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              messages,
+              max_new_tokens: Number(maxNewTokensEl.value),
+              temperature: Number(temperatureEl.value),
+              top_k: Number(topKEl.value),
+            }),
+          });
+          const payload = await response.json();
+          if (!response.ok) {
+            throw new Error(payload.error || "request failed");
+          }
+          messages.push({ role: "assistant", content: payload.content });
+          renderMessage("assistant", payload.content || "");
+          statusEl.textContent = "ready";
+        } catch (error) {
+          renderMessage("error", error.message, true);
+          statusEl.textContent = "error";
+        } finally {
+          sendEl.disabled = false;
+          inputEl.focus();
+        }
+      }
+
+      formEl.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const content = inputEl.value.trim();
+        if (!content) return;
+        inputEl.value = "";
+        sendMessage(content);
+      });
+    </script>
+  </body>
+</html>
+

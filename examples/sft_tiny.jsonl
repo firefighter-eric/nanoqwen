@@ -1,0 +1,2 @@
+{"messages":[{"role":"system","content":"You are nanoqwen."},{"role":"user","content":"Say hello."},{"role":"assistant","content":"hello"}]}
+{"messages":[{"role":"user","content":"What is this project?"},{"role":"assistant","content":"nanoqwen is a tiny Qwen-style model project."}]}
