@@ -1,0 +1,2 @@
+{"prompt":"user: Say hello.\nassistant: ","chosen":"hello","rejected":"goodbye"}
+{"messages":[{"role":"system","content":"You are nanoqwen."},{"role":"user","content":"What is this project?"}],"chosen":"nanoqwen is a tiny Qwen-style model project.","rejected":"I cannot answer."}
