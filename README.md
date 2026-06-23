@@ -118,6 +118,12 @@ uv sync --extra dev
 
 只做 text-only Qwen3/Qwen3.5 手写模型推理和对照，`dev` extra 就够了。
 
+如果要准备 parquet 文本数据集，例如 `climbmix`，再安装：
+
+```bash
+uv sync --extra dev --extra data
+```
+
 如果要运行可选的多模态 HF 脚本，例如 `scripts/qwen35_generate.py`，再安装：
 
 ```bash
@@ -382,6 +388,61 @@ uv run python scripts/hf_smoke.py Qwen/Qwen3-0.6B
 ```bash
 uv run python scripts/train.py --data data.txt --out-dir out/base
 ```
+
+也可以使用命名数据集。数据集相关脚本放在 `dataset/<dataset_name>/`，共享
+注册表放在 `dataset/registry.py`，真实数据默认写入仓库根目录的 `data/`（已被
+git 忽略）。当前内置 `climbmix`，对应 `karpathy/climbmix-400b-shuffle`，和
+`autoresearch` 一样使用 parquet shard；默认准备 10 个训练 shard，并固定使用
+`shard_06542.parquet` 作为 validation shard：
+
+```bash
+uv run python dataset/climbmix/prepare.py --num-shards 10
+uv run python scripts/train.py --dataset climbmix --out-dir out/climbmix
+```
+
+也可以使用统一 dispatcher：
+
+```bash
+uv run python dataset/prepare.py --dataset climbmix --num-shards 10
+```
+
+默认目录结构：
+
+```text
+dataset/climbmix/
+  spec.py
+  prepare.py
+data/climbmix/shards/
+data/climbmix/prepared/
+```
+
+快速试跑可以只准备 1 个训练 shard，或者让训练入口在缺失时自动下载和物化：
+
+```bash
+uv run python dataset/climbmix/prepare.py --num-shards 1
+uv run python scripts/train.py --dataset climbmix --dataset-num-shards 1
+
+uv run python scripts/train.py \
+  --dataset climbmix \
+  --dataset-num-shards 1 \
+  --download \
+  --out-dir out/climbmix-smoke
+```
+
+新增数据集时，建议新增 `dataset/<name>/spec.py` 和
+`dataset/<name>/prepare.py`，再在 `dataset/registry.py` 注册这个 spec；训练脚本
+无需再加分支。
+
+当前还内置了 IMDb movie review 数据集：
+
+```bash
+uv run python dataset/imdb/prepare.py
+uv run python scripts/train.py --dataset imdb --out-dir out/imdb
+```
+
+IMDb 会下载 `train`、`test` 和 `unsupervised` 三个 parquet split，并物化到
+`data/imdb/prepared/`。它更适合情感分类或 prompt/SFT 实验；作为普通 LM 文本训练
+也可以先用来跑轻量流程。
 
 SFT 使用 JSONL。纯文本行会训练所有 token：
 

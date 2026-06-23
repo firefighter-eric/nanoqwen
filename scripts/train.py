@@ -17,11 +17,37 @@ from nanoqwen.attention import ATTN_IMPLEMENTATION_CHOICES
 from nanoqwen.config import NanoqwenConfig
 from nanoqwen.data import built_in_tiny_dataset, load_text_dataset
 from nanoqwen.model import NanoqwenForCausalLM
+from dataset.registry import available_text_datasets, materialize_text_dataset
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a small Qwen-style language model.")
-    parser.add_argument("--data", type=str, default=None, help="UTF-8 text file. Uses built-in text if omitted.")
+    data_group = parser.add_mutually_exclusive_group()
+    data_group.add_argument(
+        "--data",
+        type=str,
+        default=None,
+        help="UTF-8 text file. Uses built-in text if omitted.",
+    )
+    data_group.add_argument(
+        "--dataset",
+        choices=available_text_datasets(),
+        default=None,
+        help="Named dataset prepared under data/.",
+    )
+    parser.add_argument("--data-dir", default=None, help="Override named dataset data directory.")
+    parser.add_argument(
+        "--dataset-num-shards",
+        type=int,
+        default=None,
+        help="Number of named dataset training shards to use. Use -1 for all shards.",
+    )
+    parser.add_argument(
+        "--download",
+        action="store_true",
+        help="Download and prepare missing named dataset shards before training.",
+    )
+    parser.add_argument("--download-workers", type=int, default=4)
     parser.add_argument("--out-dir", type=str, default="out/train")
     parser.add_argument("--steps", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=16)
@@ -67,6 +93,25 @@ def batch_loss(model: NanoqwenForCausalLM, batch: tuple[torch.Tensor, torch.Tens
     return F.cross_entropy(logits.view(-1, model.config.vocab_size), targets.reshape(-1))
 
 
+def load_training_dataset(args: argparse.Namespace):
+    if args.dataset:
+        path = materialize_text_dataset(
+            args.dataset,
+            split="train",
+            num_shards=args.dataset_num_shards,
+            data_dir=args.data_dir,
+            download=args.download,
+            workers=args.download_workers,
+        )
+        print(f"dataset: {args.dataset} ({path})")
+        return load_text_dataset(path, block_size=args.block_size)
+
+    if args.data:
+        return load_text_dataset(args.data, block_size=args.block_size)
+
+    return built_in_tiny_dataset(block_size=args.block_size)
+
+
 @torch.no_grad()
 def estimate_loss(
     model: NanoqwenForCausalLM,
@@ -94,11 +139,7 @@ def main() -> None:
     args = parse_args()
     torch.manual_seed(args.seed)
 
-    dataset = (
-        load_text_dataset(args.data, block_size=args.block_size)
-        if args.data
-        else built_in_tiny_dataset(block_size=args.block_size)
-    )
+    dataset = load_training_dataset(args)
     val_size = max(1, min(len(dataset) // 10, 512))
     train_size = len(dataset) - val_size
     train_dataset, val_dataset = random_split(

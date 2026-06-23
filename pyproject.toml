@@ -21,6 +21,9 @@ hf = [
   "transformers>=4.51",
   "safetensors>=0.4",
 ]
+data = [
+  "pyarrow>=15.0",
+]
 vision = [
   "pillow>=10.0",
   "torchvision==0.23.0+cu129",
