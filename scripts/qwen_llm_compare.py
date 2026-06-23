@@ -23,7 +23,7 @@ MODEL_FAMILIES = {
 
 def parse_args(default_family: str | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Compare nanoqwen's Qwen LLM backend against a direct Transformers call."
+        description="Compare nanoqwen's hand-written Qwen LLMs against a direct Transformers call."
     )
     if default_family is None:
         parser.add_argument("--family", choices=sorted(MODEL_FAMILIES), default="qwen3")
@@ -80,7 +80,6 @@ def direct_transformers_generate(
 def main(default_family: str | None = None) -> None:
     args = parse_args(default_family=default_family)
     llm = build_llm(args)
-    model = llm.load_model()
     tokenizer = llm.load_tokenizer()
 
     project_output = llm.generate(
@@ -91,8 +90,18 @@ def main(default_family: str | None = None) -> None:
         top_p=args.top_p,
         enable_thinking=args.enable_thinking,
     )
+    try:
+        from transformers import AutoModelForCausalLM
+    except ImportError as exc:
+        raise ImportError("Install with `uv sync --extra dev`.") from exc
+
+    hf_model = AutoModelForCausalLM.from_pretrained(
+        llm.model_path,
+        dtype=args.dtype,
+    )
+    hf_model.to(args.device).eval()
     direct_output = direct_transformers_generate(
-        model,
+        hf_model,
         tokenizer,
         args.prompt,
         system=args.system,

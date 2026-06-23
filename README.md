@@ -27,10 +27,11 @@ Qwen-like causal language models end to end.
 nanoqwen/
   config.py        # small dataclass config with Qwen-style fields
   model.py         # Qwen-like decoder-only causal LM
-  qwen3_model.py   # local Qwen3-0.6B text-only Transformers LLM wrapper
-  qwen35_model.py  # local Qwen3.5-0.8B text-only Transformers LLM wrapper
+  qwen3_model.py   # hand-written Qwen3-0.6B text-only model
+  qwen35_model.py  # hand-written Qwen3.5-0.8B text-only model
+  manual_text.py   # shared manual-model tokenizer/generation utilities
   generation.py    # greedy/top-k/top-p sampling helpers
-  hf_text.py       # shared helpers for local HF text-only Qwen generation
+  hf_text.py       # chat-template helpers and HF comparison generation kwargs
   hf_multimodal.py # helpers for local HF multimodal model prompts
   tokenizer.py     # byte tokenizer plus optional HF tokenizer wrapper
   data.py          # packed token dataset for training
@@ -49,12 +50,12 @@ scripts/
   chat_web.py      # local browser chat UI
   hf_smoke.py      # HF config/tokenizer/optional weight import smoke
   qwen_llm_generate.py # family-selecting Qwen3/Qwen3.5 text-only generation
-  qwen_llm_compare.py # compare project LLM wrappers to direct Transformers
-  qwen3_llm_generate.py # local Qwen3-0.6B text-only Transformers generation
-  qwen3_compare.py # compare Qwen3 wrapper to direct Transformers
-  qwen35_llm_generate.py # local Qwen3.5-0.8B text-only Transformers generation
+  qwen_llm_compare.py # compare hand-written models to direct Transformers
+  qwen3_llm_generate.py # local Qwen3-0.6B hand-written text generation
+  qwen3_compare.py # compare hand-written Qwen3 to direct Transformers
+  qwen35_llm_generate.py # local Qwen3.5-0.8B hand-written text generation
   qwen35_generate.py # optional local Qwen3.5-0.8B multimodal Transformers generation
-  qwen35_compare.py # compare project Qwen3.5 LLM backend to direct Transformers
+  qwen35_compare.py # compare hand-written Qwen3.5 to direct Transformers
   sft.py           # supervised fine-tuning on text/messages JSONL
   dpo.py           # preference tuning with DPO
   import_hf.py     # import compatible HF Qwen checkpoints
@@ -217,13 +218,13 @@ Verify its local tokenizer without loading weights:
 bash runs/qwen3_dry_smoke.sh
 ```
 
-Run a short local text-only generation through Transformers:
+Run a short local text-only generation through the hand-written Qwen3 model:
 
 ```bash
 bash runs/qwen3_text_smoke.sh
 ```
 
-Verify that the project Qwen3 LLM wrapper produces the same deterministic output
+Verify that the hand-written Qwen3 model produces the same deterministic output
 as a direct Transformers call:
 
 ```bash
@@ -236,11 +237,10 @@ Download Qwen/Qwen3.5-0.8B into `models/Qwen/Qwen3.5-0.8B`:
 bash runs/download_qwen35_08b.sh
 ```
 
-This checkpoint includes a multimodal wrapper, but nanoqwen uses it as a
-text-only LLM through `AutoTokenizer` + `AutoModelForCausalLM` by default. The
-native nanoqwen decoder remains a compact Qwen2/Qwen3-style text decoder; Qwen3.5
-same-output mode uses the Transformers Qwen3.5 LLM backend because Qwen3.5 text
-layers include hybrid linear-attention blocks.
+This checkpoint includes multimodal and MTP weights, but nanoqwen loads only the
+text LLM weights. `qwen35_model.py` hand-implements the Qwen3.5 text stack,
+including its hybrid `linear_attention` / `full_attention` layer schedule and
+GatedDeltaNet linear-attention blocks.
 
 Verify its local tokenizer without loading weights:
 
@@ -248,13 +248,13 @@ Verify its local tokenizer without loading weights:
 bash runs/qwen35_dry_smoke.sh
 ```
 
-Run a short local text-only generation through Transformers:
+Run a short local text-only generation through the hand-written Qwen3.5 model:
 
 ```bash
 bash runs/qwen35_text_smoke.sh
 ```
 
-Verify that the project Qwen3.5 LLM backend produces the same deterministic output
+Verify that the hand-written Qwen3.5 LLM produces the same deterministic output
 as a direct Transformers call:
 
 ```bash
@@ -322,9 +322,10 @@ Implemented:
 - Multiple-choice scoring by answer-choice log probability.
 - Local web chat UI.
 - Checkpoint reporting in Markdown or JSON.
-- Local Qwen3.5-0.8B text-only Transformers generation helper for the downloaded
-  checkpoint.
-- Deterministic Qwen3.5 LLM generation parity smoke against direct Transformers.
+- Hand-written Qwen3-0.6B and Qwen3.5-0.8B text-only model implementations that
+  load local HF safetensors.
+- Deterministic Qwen3 and Qwen3.5 generation parity smoke against direct
+  Transformers.
 
 Future Extensions:
 
