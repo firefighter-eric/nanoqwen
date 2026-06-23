@@ -1,0 +1,116 @@
+# AGENTS.md
+
+这个文件给后续维护 nanoqwen 的 agent/开发者使用。仓库根目录下的所有文件都
+遵循这里的说明。
+
+## 项目定位
+
+nanoqwen 是一个可读优先的小型 Qwen 风格 LLM 实验仓库。它有两类模型代码：
+
+- `nanoqwen/model.py`：通用 Qwen-like decoder-only causal LM，用于 tiny 训练、
+  SFT、DPO、采样、评估和 HF-style import/export。
+- `nanoqwen/qwen3_model.py` 与 `nanoqwen/qwen35_model.py`：手写真实 Qwen
+  text-only 推理模型，用于加载本地 HF checkpoint 并和 Transformers 做生成结果
+  对照。
+
+不要把真实 Qwen 推理路径改成 `AutoModelForCausalLM` wrapper。Transformers 只
+应该出现在 tokenizer/chat-template 辅助、HF-style import/export、smoke 或
+compare 脚本里。
+
+## 关键文件
+
+- `nanoqwen/qwen3_model.py`
+  - 目标模型：`Qwen/Qwen3-0.6B`
+  - 默认路径：`models/Qwen/Qwen3-0.6B`
+  - 加载文件：`config.json`、`tokenizer_config.json`、`model.safetensors`
+  - 当前实现复用 `NanoqwenForCausalLM`，要求 state dict 名称和手写结构对齐。
+
+- `nanoqwen/qwen35_model.py`
+  - 目标模型：`Qwen/Qwen3.5-0.8B`
+  - 默认路径：`models/Qwen/Qwen3.5-0.8B`
+  - 加载文件：`config.json`、`tokenizer_config.json`、
+    `model.safetensors-00001-of-00001.safetensors`
+  - 只加载 `model.language_model.*` 文本权重。
+  - 不实现视觉 encoder、多模态输入或 MTP。
+
+- `nanoqwen/manual_text.py`
+  - 手写真实模型共用的 dtype、tokenizer、chat prompt 和 generation 工具。
+
+- `nanoqwen/hf_text.py`
+  - 只放 tokenizer/chat-template 和 Transformers 对照所需的轻量 helper。
+
+- `scripts/qwen_llm_generate.py`
+  - 手写 Qwen3/Qwen3.5 family-selecting 生成入口。
+
+- `scripts/qwen_llm_compare.py`
+  - 手写模型 vs 直接 Transformers 的生成结果对照入口。
+
+## 本地模型文件
+
+真实模型权重放在 `models/` 下，不能提交到 git。
+
+下载命令：
+
+```bash
+bash runs/download_qwen3_06b.sh
+bash runs/download_qwen35_08b.sh
+```
+
+如果改下载脚本，优先加入更强的 revision/hash 校验；不要只依赖文件名。
+
+## 开发约束
+
+- 保持代码可读，优先使用 plain PyTorch 和现有项目风格。
+- 新增模型能力时，先确认它属于通用 tiny 模型路径还是手写真实 Qwen 路径。
+- 不要引入大框架式抽象，除非它明显减少重复或对齐已有模式。
+- 不要提交 `models/`、`out/`、缓存、日志或真实权重文件。
+- 改动真实模型实现时，必须考虑和 HF checkpoint 的 state dict 名称对齐。
+- 生成 parity 以 `temperature=0` 的 greedy 输出为准；sampling 不作为严格一致
+  标准。
+
+## 推荐检查
+
+普通改动至少运行：
+
+```bash
+uv run python -m compileall nanoqwen scripts tests
+uv run pytest -q
+```
+
+或者：
+
+```bash
+bash runs/check.sh
+```
+
+涉及训练、评估、SFT、DPO、web 或 checkpoint import/export 时，运行：
+
+```bash
+bash runs/check.sh --smoke
+```
+
+涉及 Qwen3-0.6B 手写模型时，确认本地已下载权重后运行：
+
+```bash
+bash runs/check.sh --qwen3
+```
+
+涉及 Qwen3.5-0.8B 手写模型时，确认本地已下载权重后运行：
+
+```bash
+bash runs/check.sh --qwen35
+```
+
+两者都涉及时：
+
+```bash
+bash runs/check.sh --qwen
+```
+
+## 已知边界
+
+- Qwen3.5 当前只覆盖 text LLM，不覆盖多模态和 MTP。
+- Qwen3/Qwen3.5 的严格生成一致性主要验证 greedy 解码。
+- 本地 web chat 面向 localhost 开发使用；如果要暴露到外网，需要先加请求大小、
+  token 数、并发和超时限制。
+- checkpoint 读取默认信任本地文件；不要对不可信来源直接 `torch.load`。
