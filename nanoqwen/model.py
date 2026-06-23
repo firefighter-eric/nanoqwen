@@ -6,6 +6,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from .attention import attention_bias_from_bool, attention_forward, causal_bool_mask
 from .config import NanoqwenConfig
 
 KVCache = list[tuple[torch.Tensor, torch.Tensor]]
@@ -94,11 +95,7 @@ def causal_mask(
     device: torch.device,
     attention_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    past_len = k_len - q_len
-    q_positions = torch.arange(q_len, device=device)[:, None] + past_len
-    k_positions = torch.arange(k_len, device=device)[None, :]
-    mask = k_positions > q_positions
-    mask = mask[None, None, :, :]
+    mask = causal_bool_mask(q_len, k_len, device)
 
     if attention_mask is not None:
         if attention_mask.shape[-1] != k_len:
@@ -129,6 +126,7 @@ class QwenAttention(nn.Module):
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
         self.scaling = self.head_dim**-0.5
         self.attention_dropout = config.attention_dropout
+        self.attn_implementation = config.attn_implementation
 
         self.q_proj = nn.Linear(
             config.hidden_size,
@@ -193,13 +191,22 @@ class QwenAttention(nn.Module):
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
-        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) * self.scaling
-        mask = causal_mask(seq_len, key_states.shape[-2], hidden_states.device, attention_mask)
-        attn_weights = attn_weights.masked_fill(mask, torch.finfo(attn_weights.dtype).min)
-        attn_weights = F.softmax(attn_weights.float(), dim=-1).to(query_states.dtype)
-        attn_weights = F.dropout(attn_weights, p=self.attention_dropout, training=self.training)
+        attention_bias = None
+        if attention_mask is not None:
+            mask = causal_mask(seq_len, key_states.shape[-2], hidden_states.device, attention_mask)
+            attention_bias = attention_bias_from_bool(mask, query_states.dtype)
 
-        attn_output = torch.matmul(attn_weights, value_states)
+        attn_output = attention_forward(
+            self.attn_implementation,
+            query_states,
+            key_states,
+            value_states,
+            attention_bias=attention_bias,
+            dropout_p=self.attention_dropout,
+            scaling=self.scaling,
+            training=self.training,
+            is_causal=True,
+        )
         attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, -1).contiguous()
         attn_output = self.o_proj(attn_output)
         return attn_output, present_key_value
@@ -288,6 +295,8 @@ class NanoqwenModel(nn.Module):
                 device=attention_mask.device,
             )
             attention_mask = torch.cat((prefix, attention_mask), dim=-1)
+        if attention_mask is not None and torch.all(attention_mask == 1):
+            attention_mask = None
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(

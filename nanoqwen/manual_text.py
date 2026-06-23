@@ -102,10 +102,17 @@ def generate_with_manual_model(
 class ManualLLM:
     model_cls = None
 
-    def __init__(self, model_path: str, device: str = "cpu", dtype: str = "auto") -> None:
+    def __init__(
+        self,
+        model_path: str,
+        device: str = "cpu",
+        dtype: str = "auto",
+        attn_implementation: str = "eager",
+    ) -> None:
         self.model_path = model_path
         self.device = device
         self.dtype = dtype
+        self.attn_implementation = attn_implementation
         self.tokenizer = None
         self.model = None
 
@@ -118,7 +125,11 @@ class ManualLLM:
         if self.model is None:
             if self.model_cls is None:
                 raise TypeError("ManualLLM subclasses must define model_cls")
-            model = self.model_cls.from_pretrained(self.model_path, dtype=self.dtype)
+            model = self.model_cls.from_pretrained(
+                self.model_path,
+                dtype=self.dtype,
+                attn_implementation=self.attn_implementation,
+            )
             self.model = model.to(self.device).eval()
         return self.model
 

@@ -5,6 +5,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from .attention import normalize_attn_implementation
+
 
 @dataclass
 class NanoqwenConfig:
@@ -30,6 +32,7 @@ class NanoqwenConfig:
     attention_dropout: float = 0.0
     attention_bias: bool = False
     attention_output_bias: bool | None = None
+    attn_implementation: str = "eager"
     use_cache: bool = True
     tie_word_embeddings: bool = False
     rope_theta: float = 1_000_000.0
@@ -49,6 +52,7 @@ class NanoqwenConfig:
             raise ValueError("Only silu is implemented in the minimal model")
         if self.attention_output_bias is None:
             self.attention_output_bias = self.attention_bias
+        self.attn_implementation = normalize_attn_implementation(self.attn_implementation)
 
     @classmethod
     def tiny(cls, vocab_size: int = 257) -> "NanoqwenConfig":
@@ -101,6 +105,7 @@ class NanoqwenConfig:
         data = self.to_dict()
         data.pop("use_qk_norm", None)
         data.pop("attention_output_bias", None)
+        data.pop("attn_implementation", None)
         data.pop("rope_theta", None)
         return data
 

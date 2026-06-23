@@ -36,6 +36,16 @@ compare 脚本里。
 - `nanoqwen/manual_text.py`
   - 手写真实模型共用的 dtype、tokenizer、chat prompt 和 generation 工具。
 
+- `nanoqwen/attention.py`
+  - 统一管理 `eager`、`sdpa`、`flash_attention_2` backend。
+  - CLI/API 也接受 `flash-attn2`、`flash_attn2`、`flash2`、`fa2`，但内部统一
+    归一化为 `flash_attention_2`。
+  - `flash_attention_2` 是可选路径，依赖外部 `flash_attn` 包和 CUDA tensor。
+
+- `docs/attention_backends.md`
+  - attention backend 的专门文档，包含安装组合、使用方式、HF 对照范围和
+    1024/2K/4K forward benchmark。
+
 - `nanoqwen/hf_text.py`
   - 只放 tokenizer/chat-template 和 Transformers 对照所需的轻量 helper。
 
@@ -67,6 +77,10 @@ bash runs/download_qwen35_08b.sh
 - 改动真实模型实现时，必须考虑和 HF checkpoint 的 state dict 名称对齐。
 - 生成 parity 以 `temperature=0` 的 greedy 输出为准；sampling 不作为严格一致
   标准。
+- 保留 `eager` attention 作为可读基线。新增优化 backend 时，必须和 eager 做
+  数值对齐测试。
+- Qwen3.5 的 SDPA/Flash 只适用于 `full_attention` 层；不要把
+  `linear_attention` 层替换成 SDPA/Flash，它是 GatedDeltaNet。
 
 ## 推荐检查
 
@@ -107,10 +121,20 @@ bash runs/check.sh --qwen35
 bash runs/check.sh --qwen
 ```
 
+改 attention backend 时，至少运行：
+
+```bash
+uv run pytest -q tests/test_attention_backends.py tests/test_model.py tests/test_hf_parity.py
+```
+
 ## 已知边界
 
 - Qwen3.5 当前只覆盖 text LLM，不覆盖多模态和 MTP。
 - Qwen3/Qwen3.5 的严格生成一致性主要验证 greedy 解码。
+- `flash_attention_2` 需要 CUDA 和可选 `flash_attn` 包；CPU 或未安装依赖时不应
+  假装启用 FlashAttention。
+- 带 padding mask 的 full-attention 场景会走 SDPA 安全路径；无 padding 的
+  prefill 和 KV cache decode 可以走 FlashAttention-2。
 - 本地 web chat 面向 localhost 开发使用；如果要暴露到外网，需要先加请求大小、
   token 数、并发和超时限制。
 - checkpoint 读取默认信任本地文件；不要对不可信来源直接 `torch.load`。

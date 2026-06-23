@@ -10,6 +10,7 @@ from safetensors.torch import load_file
 from torch import nn
 from torch.nn import functional as F
 
+from nanoqwen.attention import attention_forward, causal_attention_bias, normalize_attn_implementation
 from nanoqwen.model import CausalLMOutput
 from nanoqwen.manual_text import ManualLLM, first_existing_file, resolve_dtype
 
@@ -34,6 +35,7 @@ class Qwen35TextConfig:
     rms_norm_eps: float = 1e-6
     attention_dropout: float = 0.0
     attention_bias: bool = False
+    attn_implementation: str = "eager"
     tie_word_embeddings: bool = True
     pad_token_id: int | None = None
     eos_token_id: int | None = None
@@ -45,6 +47,9 @@ class Qwen35TextConfig:
     linear_key_head_dim: int = 128
     linear_value_head_dim: int = 128
     linear_conv_kernel_dim: int = 4
+
+    def __post_init__(self) -> None:
+        self.attn_implementation = normalize_attn_implementation(self.attn_implementation)
 
     @classmethod
     def from_json_file(cls, path: str | Path) -> "Qwen35TextConfig":
@@ -66,6 +71,9 @@ class Qwen35TextConfig:
             "rms_norm_eps": values.get("rms_norm_eps", 1e-6),
             "attention_dropout": values.get("attention_dropout", 0.0),
             "attention_bias": values.get("attention_bias", False),
+            "attn_implementation": normalize_attn_implementation(
+                values.get("attn_implementation", "eager")
+            ),
             "tie_word_embeddings": values.get("tie_word_embeddings", True),
             "pad_token_id": values.get("pad_token_id"),
             "eos_token_id": values.get("eos_token_id"),
@@ -193,32 +201,13 @@ def causal_mask(
     device: torch.device,
     attention_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    min_dtype = torch.finfo(dtype).min
-    mask = torch.full((seq_len, seq_len), min_dtype, dtype=dtype, device=device)
-    mask = torch.triu(mask, diagonal=1)
-    mask = mask[None, None, :, :].expand(batch_size, 1, seq_len, seq_len).clone()
-    if attention_mask is not None:
-        padding_mask = attention_mask[:, None, None, :].to(torch.bool)
-        mask = mask.masked_fill(~padding_mask, min_dtype)
-    return mask
-
-
-def eager_attention_forward(
-    module: nn.Module,
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    attention_mask: torch.Tensor | None,
-    scaling: float,
-) -> torch.Tensor:
-    key_states = repeat_kv(key, module.num_key_value_groups)
-    value_states = repeat_kv(value, module.num_key_value_groups)
-    attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
-    if attention_mask is not None:
-        attn_weights = attn_weights + attention_mask
-    attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
-    attn_output = torch.matmul(attn_weights, value_states)
-    return attn_output.transpose(1, 2).contiguous()
+    return causal_attention_bias(
+        seq_len,
+        seq_len,
+        dtype=dtype,
+        device=device,
+        attention_mask=attention_mask,
+    ).expand(batch_size, 1, seq_len, seq_len)
 
 
 def l2norm(x: torch.Tensor, dim: int = -1, eps: float = 1e-6) -> torch.Tensor:
@@ -383,6 +372,8 @@ class Qwen35Attention(nn.Module):
         self.num_key_value_heads = config.num_key_value_heads
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
         self.scaling = self.head_dim**-0.5
+        self.attention_dropout = config.attention_dropout
+        self.attn_implementation = config.attn_implementation
         self.q_proj = nn.Linear(
             config.hidden_size,
             config.num_attention_heads * self.head_dim * 2,
@@ -420,15 +411,20 @@ class Qwen35Attention(nn.Module):
         value_states = self.v_proj(hidden_states).view(batch_size, seq_len, -1, self.head_dim).transpose(1, 2)
 
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, *position_embeddings)
-        attn_output = eager_attention_forward(
-            self,
+        key_states = repeat_kv(key_states, self.num_key_value_groups)
+        value_states = repeat_kv(value_states, self.num_key_value_groups)
+        attn_output = attention_forward(
+            self.attn_implementation,
             query_states,
             key_states,
             value_states,
-            attention_mask,
+            attention_bias=attention_mask,
+            dropout_p=self.attention_dropout,
             scaling=self.scaling,
+            training=self.training,
+            is_causal=True,
         )
-        attn_output = attn_output.reshape(batch_size, seq_len, -1).contiguous()
+        attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, -1).contiguous()
         attn_output = attn_output * torch.sigmoid(gate)
         return self.o_proj(attn_output)
 
@@ -506,15 +502,16 @@ class Qwen35TextModel(nn.Module):
             text_position_ids = position_ids
             rotary_position_ids = position_ids
 
-        full_attention_mask = causal_mask(
-            batch_size,
-            seq_len,
-            dtype=inputs_embeds.dtype,
-            device=inputs_embeds.device,
-            attention_mask=attention_mask,
-        )
         linear_attention_mask = None
+        full_attention_mask = None
         if attention_mask is not None and not torch.all(attention_mask == 1):
+            full_attention_mask = causal_mask(
+                batch_size,
+                seq_len,
+                dtype=inputs_embeds.dtype,
+                device=inputs_embeds.device,
+                attention_mask=attention_mask,
+            )
             linear_attention_mask = attention_mask
 
         hidden_states = inputs_embeds
@@ -542,9 +539,16 @@ class Qwen35ForCausalLM(nn.Module):
             self.lm_head.weight = self.model.embed_tokens.weight
 
     @classmethod
-    def from_pretrained(cls, model_path: str = DEFAULT_MODEL_PATH, dtype: str = "auto") -> "Qwen35ForCausalLM":
+    def from_pretrained(
+        cls,
+        model_path: str = DEFAULT_MODEL_PATH,
+        dtype: str = "auto",
+        attn_implementation: str | None = None,
+    ) -> "Qwen35ForCausalLM":
         root = Path(model_path)
         config = Qwen35TextConfig.from_json_file(root / "config.json")
+        if attn_implementation is not None:
+            config.attn_implementation = normalize_attn_implementation(attn_implementation)
         weights_path = first_existing_file(root, ("model.safetensors", "model.safetensors-00001-of-00001.safetensors"))
         raw_state = load_file(weights_path, device="cpu")
 
@@ -602,8 +606,19 @@ class Qwen35ForCausalLM(nn.Module):
 class Qwen35LLM(ManualLLM):
     model_cls = Qwen35ForCausalLM
 
-    def __init__(self, model_path: str = DEFAULT_MODEL_PATH, device: str = "cpu", dtype: str = "auto") -> None:
-        super().__init__(model_path=model_path, device=device, dtype=dtype)
+    def __init__(
+        self,
+        model_path: str = DEFAULT_MODEL_PATH,
+        device: str = "cpu",
+        dtype: str = "auto",
+        attn_implementation: str = "eager",
+    ) -> None:
+        super().__init__(
+            model_path=model_path,
+            device=device,
+            dtype=dtype,
+            attn_implementation=attn_implementation,
+        )
 
 
 def missing_files(model_path: str = DEFAULT_MODEL_PATH) -> list[str]:

@@ -13,6 +13,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from nanoqwen.checkpoint import save_checkpoint
+from nanoqwen.attention import ATTN_IMPLEMENTATION_CHOICES
 from nanoqwen.config import NanoqwenConfig
 from nanoqwen.data import built_in_tiny_dataset, load_text_dataset
 from nanoqwen.model import NanoqwenForCausalLM
@@ -39,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--heads", type=int, default=4)
     parser.add_argument("--kv-heads", type=int, default=2)
     parser.add_argument("--no-qk-norm", action="store_true")
+    parser.add_argument("--attn-implementation", choices=ATTN_IMPLEMENTATION_CHOICES, default="eager")
     return parser.parse_args()
 
 
@@ -54,6 +56,7 @@ def make_config(args: argparse.Namespace) -> NanoqwenConfig:
         max_position_embeddings=max(512, args.block_size),
         rope_theta=10_000.0,
         use_qk_norm=not args.no_qk_norm,
+        attn_implementation=args.attn_implementation,
         eos_token_id=args.vocab_size - 1,
     )
 
