@@ -1,0 +1,21 @@
+{
+  "model_path": "models/Qwen/Qwen3-0.6B",
+  "output_root": "out/autoresearch/imdb_sft_smoke",
+  "train_split": "train",
+  "eval_split": "test",
+  "train_examples": 2,
+  "eval_examples": 2,
+  "max_length": 128,
+  "micro_batch_size": 1,
+  "attn_implementation": "sdpa",
+  "dtype": "bfloat16",
+  "seed": 2026,
+  "experiments": [
+    {
+      "id": "smoke_e1_lr1e-5_b2",
+      "epochs": 1,
+      "lr": 1e-5,
+      "batch_size": 2
+    }
+  ]
+}
