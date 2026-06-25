@@ -1,0 +1,43 @@
+{
+  "output_root": "out/autoresearch/pretrain_arch_compare_qwen3_scaled_sdpa",
+  "seed": 2026,
+  "steps": 1000,
+  "time_budget_sec": 300,
+  "batch_size": 16,
+  "block_size": 2048,
+  "lr": 0.0003,
+  "weight_decay": 0.1,
+  "eval_every": 0,
+  "eval_tokens": 20971520,
+  "save_every": 0,
+  "device": "cuda",
+  "attn_implementation": "sdpa",
+  "vocab_size": 8192,
+  "data_format": "autoresearch",
+  "dataset": "climbmix",
+  "dataset_num_shards": 10,
+  "use_dataset_val": true,
+  "tokenizer": "~/.cache/autoresearch/tokenizer",
+  "experiments": [
+    {
+      "id": "gpt_h512_l8_ctx2048",
+      "model": "gpt",
+      "hidden_size": 512,
+      "layers": 8,
+      "heads": 4,
+      "dropout": 0.0
+    },
+    {
+      "id": "qwen3_scaled_h512_l8_ctx2048",
+      "model": "qwen",
+      "hidden_size": 512,
+      "intermediate_size": 1536,
+      "layers": 8,
+      "heads": 4,
+      "kv_heads": 2,
+      "rope_theta": 1000000.0,
+      "tie_word_embeddings": true,
+      "dropout": 0.0
+    }
+  ]
+}

@@ -10,6 +10,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from ..attention import attention_forward, causal_attention_bias, normalize_attn_implementation
 from .qwen import CausalLMOutput
 
 
@@ -25,6 +26,7 @@ class GPTConfig:
     n_embd: int = 768
     dropout: float = 0.0
     bias: bool = True
+    attn_implementation: str = "eager"
     initializer_range: float = 0.02
     pad_token_id: int | None = None
     bos_token_id: int | None = None
@@ -35,6 +37,7 @@ class GPTConfig:
             raise ValueError("n_embd must be divisible by n_head")
         if self.block_size <= 0:
             raise ValueError("block_size must be positive")
+        self.attn_implementation = normalize_attn_implementation(self.attn_implementation)
 
     @classmethod
     def tiny(cls, vocab_size: int = 257) -> "GPTConfig":
@@ -84,17 +87,12 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.dropout = config.dropout
+        self.head_dim = config.n_embd // config.n_head
+        self.scaling = self.head_dim**-0.5
+        self.attn_implementation = config.attn_implementation
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
-        self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
-        self.register_buffer(
-            "bias",
-            torch.tril(torch.ones(config.block_size, config.block_size)).view(
-                1, 1, config.block_size, config.block_size
-            ),
-            persistent=False,
-        )
 
     def forward(
         self,
@@ -103,24 +101,34 @@ class CausalSelfAttention(nn.Module):
     ) -> torch.Tensor:
         batch_size, seq_len, channels = x.size()
         query, key, value = self.c_attn(x).split(self.n_embd, dim=2)
-        head_dim = channels // self.n_head
 
-        key = key.view(batch_size, seq_len, self.n_head, head_dim).transpose(1, 2)
-        query = query.view(batch_size, seq_len, self.n_head, head_dim).transpose(1, 2)
-        value = value.view(batch_size, seq_len, self.n_head, head_dim).transpose(1, 2)
+        key = key.view(batch_size, seq_len, self.n_head, self.head_dim).transpose(1, 2)
+        query = query.view(batch_size, seq_len, self.n_head, self.head_dim).transpose(1, 2)
+        value = value.view(batch_size, seq_len, self.n_head, self.head_dim).transpose(1, 2)
 
-        attn = (query @ key.transpose(-2, -1)) * (1.0 / math.sqrt(head_dim))
-        mask = self.bias[:, :, :seq_len, :seq_len].to(torch.bool)
+        attention_bias = None
         if attention_mask is not None:
             if attention_mask.shape[-1] != seq_len:
                 raise ValueError("attention_mask length must match sequence length")
-            key_mask = attention_mask[:, None, None, :].to(torch.bool)
-            mask = mask & key_mask
-        attn = attn.masked_fill(~mask, torch.finfo(attn.dtype).min)
-        attn = F.softmax(attn, dim=-1)
-        attn = self.attn_dropout(attn)
+            attention_bias = causal_attention_bias(
+                seq_len,
+                seq_len,
+                dtype=query.dtype,
+                device=query.device,
+                attention_mask=attention_mask,
+            )
 
-        y = attn @ value
+        y = attention_forward(
+            self.attn_implementation,
+            query,
+            key,
+            value,
+            attention_bias=attention_bias,
+            dropout_p=self.dropout,
+            scaling=self.scaling,
+            training=self.training,
+            is_causal=True,
+        )
         y = y.transpose(1, 2).contiguous().view(batch_size, seq_len, channels)
         return self.resid_dropout(self.c_proj(y))
 

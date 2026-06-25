@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import pytest
+import torch
 
 from dataset.registry import (
     DEFAULT_DATA_DIR,
     available_text_datasets,
     get_text_dataset_spec,
     materialize_text_dataset,
+    parquet_source_paths_for_split,
     planned_shard_ids,
     prepared_text_path,
     split_parquet_path,
 )
+from nanoqwen.data import make_autoresearch_packed_loader
 
 
 def test_climbmix_is_registered() -> None:
@@ -42,6 +45,17 @@ def test_planned_shards_pin_validation_shard() -> None:
 
     assert train_ids == [0, 1, 2]
     assert val_id == 6542
+
+
+def test_parquet_source_paths_for_climbmix_split(tmp_path) -> None:
+    train_paths = parquet_source_paths_for_split("climbmix", "train", num_shards=2, data_dir=tmp_path)
+    val_paths = parquet_source_paths_for_split("climbmix", "val", num_shards=2, data_dir=tmp_path)
+
+    assert train_paths == [
+        tmp_path / "climbmix" / "shards" / "shard_00000.parquet",
+        tmp_path / "climbmix" / "shards" / "shard_00001.parquet",
+    ]
+    assert val_paths == [tmp_path / "climbmix" / "shards" / "shard_06542.parquet"]
 
 
 def test_prepared_text_path_includes_train_shard_count(tmp_path) -> None:
@@ -81,3 +95,33 @@ def test_materialize_missing_imdb_shows_prepare_hint(tmp_path) -> None:
     message = str(excinfo.value)
     assert "train-00000-of-00001.parquet" in message
     assert "dataset/imdb/prepare.py" in message
+
+
+def test_autoresearch_packed_loader_prepends_bos_and_fills_rows(tmp_path) -> None:
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+
+    path = tmp_path / "docs.parquet"
+    table = pa.table({"text": ["ab", "c", "defg"]})
+    pq.write_table(table, path)
+
+    class ToyTokenizer:
+        bos_token_id = 9
+
+        def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+            assert not add_special_tokens
+            return [ord(char) - 96 for char in text]
+
+    loader = make_autoresearch_packed_loader(
+        [path],
+        ToyTokenizer(),
+        batch_size=2,
+        block_size=4,
+    )
+    input_ids, targets = next(loader)
+
+    assert input_ids.shape == (2, 4)
+    assert targets.shape == (2, 4)
+    rows = [torch.cat((input_ids[i, :1], targets[i])).tolist() for i in range(2)]
+    assert all(len(row) == 5 for row in rows)
+    assert sum(token == 9 for row in rows for token in row) >= 2

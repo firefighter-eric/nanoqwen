@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import sys
+import time
 from pathlib import Path
 
 import torch
@@ -15,13 +17,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from nanoqwen.checkpoint import save_checkpoint
 from nanoqwen.attention import ATTN_IMPLEMENTATION_CHOICES
 from nanoqwen.config import NanoqwenConfig
-from nanoqwen.data import built_in_tiny_dataset, load_text_dataset
-from nanoqwen.model import NanoqwenForCausalLM
-from dataset.registry import available_text_datasets, materialize_text_dataset
+from nanoqwen.data import built_in_tiny_dataset, load_text_dataset, make_autoresearch_packed_loader
+from nanoqwen.models import CausalLM, GPTConfig, ModelConfig, model_from_config
+from nanoqwen.tokenizer import load_hf_tokenizer
+from dataset.registry import (
+    available_text_datasets,
+    ensure_text_dataset_shards,
+    get_text_dataset_spec,
+    materialize_text_dataset,
+    parquet_source_paths_for_split,
+)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train a small Qwen-style language model.")
+    parser = argparse.ArgumentParser(description="Train a small decoder-only language model.")
     data_group = parser.add_mutually_exclusive_group()
     data_group.add_argument(
         "--data",
@@ -36,6 +45,8 @@ def parse_args() -> argparse.Namespace:
         help="Named dataset prepared under data/.",
     )
     parser.add_argument("--data-dir", default=None, help="Override named dataset data directory.")
+    parser.add_argument("--val-data", default=None, help="Optional fixed validation text file.")
+    parser.add_argument("--use-dataset-val", action="store_true", help="Use the named dataset validation split.")
     parser.add_argument(
         "--dataset-num-shards",
         type=int,
@@ -49,13 +60,35 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--download-workers", type=int, default=4)
     parser.add_argument("--out-dir", type=str, default="out/train")
+    parser.add_argument("--model", choices=("qwen", "gpt"), default="qwen")
+    parser.add_argument(
+        "--data-format",
+        choices=("text", "autoresearch"),
+        default="text",
+        help="Use text materialization or autoresearch parquet BOS packing.",
+    )
+    parser.add_argument("--tokenizer", default=None, help="Optional local/HF tokenizer path.")
+    parser.add_argument("--max-data-chars", type=int, default=None)
+    parser.add_argument("--max-val-chars", type=int, default=None)
     parser.add_argument("--steps", type=int, default=200)
+    parser.add_argument(
+        "--time-budget-sec",
+        type=float,
+        default=None,
+        help="Optional wall-clock training budget, excluding setup. Stops after this many seconds.",
+    )
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--block-size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=0.1)
     parser.add_argument("--eval-every", type=int, default=50)
     parser.add_argument("--eval-iters", type=int, default=10)
+    parser.add_argument(
+        "--eval-tokens",
+        type=int,
+        default=None,
+        help="Optional fixed validation token budget. Autoresearch uses 40*524288.",
+    )
     parser.add_argument("--save-every", type=int, default=100)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=1337)
@@ -65,12 +98,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--layers", type=int, default=2)
     parser.add_argument("--heads", type=int, default=4)
     parser.add_argument("--kv-heads", type=int, default=2)
+    parser.add_argument("--dropout", type=float, default=0.0)
+    parser.add_argument("--rope-theta", type=float, default=1_000_000.0)
+    parser.add_argument("--no-gpt-bias", action="store_true")
+    parser.add_argument("--tie-word-embeddings", action="store_true")
     parser.add_argument("--no-qk-norm", action="store_true")
     parser.add_argument("--attn-implementation", choices=ATTN_IMPLEMENTATION_CHOICES, default="eager")
     return parser.parse_args()
 
 
-def make_config(args: argparse.Namespace) -> NanoqwenConfig:
+def make_config(args: argparse.Namespace) -> ModelConfig:
+    if args.model == "gpt":
+        return GPTConfig(
+            vocab_size=args.vocab_size,
+            block_size=args.block_size,
+            n_layer=args.layers,
+            n_head=args.heads,
+            n_embd=args.hidden_size,
+            dropout=args.dropout,
+            bias=not args.no_gpt_bias,
+            attn_implementation=args.attn_implementation,
+            eos_token_id=args.vocab_size - 1,
+        )
+
     return NanoqwenConfig(
         vocab_size=args.vocab_size,
         hidden_size=args.hidden_size,
@@ -80,20 +130,21 @@ def make_config(args: argparse.Namespace) -> NanoqwenConfig:
         num_key_value_heads=args.kv_heads,
         head_dim=args.hidden_size // args.heads,
         max_position_embeddings=max(512, args.block_size),
-        rope_theta=10_000.0,
+        rope_theta=args.rope_theta,
         use_qk_norm=not args.no_qk_norm,
+        tie_word_embeddings=args.tie_word_embeddings,
         attn_implementation=args.attn_implementation,
         eos_token_id=args.vocab_size - 1,
     )
 
 
-def batch_loss(model: NanoqwenForCausalLM, batch: tuple[torch.Tensor, torch.Tensor], device: str) -> torch.Tensor:
+def batch_loss(model: CausalLM, batch: tuple[torch.Tensor, torch.Tensor], device: str) -> torch.Tensor:
     input_ids, targets = (tensor.to(device) for tensor in batch)
     logits = model(input_ids=input_ids).logits
-    return F.cross_entropy(logits.view(-1, model.config.vocab_size), targets.reshape(-1))
+    return F.cross_entropy(logits.reshape(-1, model.config.vocab_size), targets.reshape(-1))
 
 
-def load_training_dataset(args: argparse.Namespace):
+def load_training_dataset(args: argparse.Namespace, tokenizer=None):
     if args.dataset:
         path = materialize_text_dataset(
             args.dataset,
@@ -104,29 +155,161 @@ def load_training_dataset(args: argparse.Namespace):
             workers=args.download_workers,
         )
         print(f"dataset: {args.dataset} ({path})")
-        return load_text_dataset(path, block_size=args.block_size)
+        return load_text_dataset(
+            path,
+            block_size=args.block_size,
+            tokenizer=tokenizer,
+            max_chars=args.max_data_chars,
+        )
 
     if args.data:
-        return load_text_dataset(args.data, block_size=args.block_size)
+        return load_text_dataset(
+            args.data,
+            block_size=args.block_size,
+            tokenizer=tokenizer,
+            max_chars=args.max_data_chars,
+        )
 
     return built_in_tiny_dataset(block_size=args.block_size)
 
 
+def load_validation_dataset(args: argparse.Namespace, tokenizer=None):
+    if args.val_data:
+        return load_text_dataset(
+            args.val_data,
+            block_size=args.block_size,
+            tokenizer=tokenizer,
+            max_chars=args.max_val_chars,
+        )
+    if args.dataset and args.use_dataset_val:
+        path = materialize_text_dataset(
+            args.dataset,
+            split="val",
+            num_shards=args.dataset_num_shards,
+            data_dir=args.data_dir,
+            download=args.download,
+            workers=args.download_workers,
+        )
+        print(f"validation dataset: {args.dataset} ({path})")
+        return load_text_dataset(
+            path,
+            block_size=args.block_size,
+            tokenizer=tokenizer,
+            max_chars=args.max_val_chars,
+        )
+    return None
+
+
+def load_autoresearch_loaders(args: argparse.Namespace, tokenizer):
+    if args.dataset is None:
+        raise ValueError("--data-format autoresearch requires --dataset")
+    if tokenizer is None:
+        raise ValueError("--data-format autoresearch requires --tokenizer")
+
+    ensure_text_dataset_shards(
+        args.dataset,
+        num_shards=args.dataset_num_shards,
+        data_dir=args.data_dir,
+        download=args.download,
+        workers=args.download_workers,
+        splits=("train", "val"),
+    )
+    spec = get_text_dataset_spec(args.dataset)
+    train_paths = parquet_source_paths_for_split(
+        args.dataset,
+        "train",
+        num_shards=args.dataset_num_shards,
+        data_dir=args.data_dir,
+    )
+    val_paths = parquet_source_paths_for_split(
+        args.dataset,
+        "val",
+        num_shards=args.dataset_num_shards,
+        data_dir=args.data_dir,
+    )
+    print(f"dataset: {args.dataset} autoresearch parquet train shards={len(train_paths)}")
+    print(f"validation dataset: {args.dataset} autoresearch parquet val shards={len(val_paths)}")
+    train_loader = make_autoresearch_packed_loader(
+        train_paths,
+        tokenizer,
+        batch_size=args.batch_size,
+        block_size=args.block_size,
+        text_column=spec.text_column,
+        device=args.device,
+    )
+    val_loader = make_autoresearch_packed_loader(
+        val_paths,
+        tokenizer,
+        batch_size=args.batch_size,
+        block_size=args.block_size,
+        text_column=spec.text_column,
+        device=args.device,
+    )
+    data_info = {
+        "format": "autoresearch",
+        "dataset": args.dataset,
+        "data": None,
+        "val_data": None,
+        "tokenizer": args.tokenizer,
+        "max_data_chars": None,
+        "max_val_chars": None,
+        "train_size": None,
+        "val_size": None,
+        "train_paths": [str(path) for path in train_paths],
+        "val_paths": [str(path) for path in val_paths],
+        "eval_tokens": args.eval_tokens,
+    }
+    return train_loader, val_loader, data_info
+
+
 @torch.no_grad()
+def estimate_metrics(
+    model: CausalLM,
+    loader: DataLoader,
+    device: str,
+    eval_iters: int,
+    token_bytes: torch.Tensor | None = None,
+) -> dict[str, float | None]:
+    model.eval()
+    losses = []
+    total_loss = 0.0
+    total_bytes = 0
+    for i, batch in enumerate(loader):
+        if i >= eval_iters:
+            break
+        input_ids, targets = (tensor.to(device) for tensor in batch)
+        logits = model(input_ids=input_ids).logits
+        loss = F.cross_entropy(
+            logits.reshape(-1, model.config.vocab_size),
+            targets.reshape(-1),
+            reduction="mean",
+        )
+        losses.append(loss.item())
+        if token_bytes is not None:
+            loss_flat = F.cross_entropy(
+                logits.reshape(-1, model.config.vocab_size),
+                targets.reshape(-1),
+                reduction="none",
+            )
+            nbytes = token_bytes[targets.reshape(-1)]
+            byte_mask = nbytes > 0
+            total_loss += float((loss_flat * byte_mask).sum().item())
+            total_bytes += int(nbytes.sum().item())
+    model.train()
+    val_loss = float(sum(losses) / max(1, len(losses)))
+    val_bpb = None
+    if token_bytes is not None and total_bytes > 0:
+        val_bpb = total_loss / (total_bytes * math.log(2))
+    return {"loss": val_loss, "bpb": val_bpb}
+
+
 def estimate_loss(
-    model: NanoqwenForCausalLM,
+    model: CausalLM,
     loader: DataLoader,
     device: str,
     eval_iters: int,
 ) -> float:
-    model.eval()
-    losses = []
-    for i, batch in enumerate(loader):
-        if i >= eval_iters:
-            break
-        losses.append(batch_loss(model, batch, device).item())
-    model.train()
-    return float(sum(losses) / max(1, len(losses)))
+    return float(estimate_metrics(model, loader, device, eval_iters)["loss"])
 
 
 def infinite_loader(loader: DataLoader):
@@ -135,46 +318,154 @@ def infinite_loader(loader: DataLoader):
             yield batch
 
 
+def get_tokenizer_vocab_size(tokenizer) -> int:
+    vocab_size = getattr(tokenizer, "vocab_size", None)
+    if vocab_size is not None:
+        return int(vocab_size)
+    return int(len(tokenizer))
+
+
+def write_json(path: str | Path, payload: dict) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
 def main() -> None:
     args = parse_args()
     torch.manual_seed(args.seed)
 
-    dataset = load_training_dataset(args)
-    val_size = max(1, min(len(dataset) // 10, 512))
-    train_size = len(dataset) - val_size
-    train_dataset, val_dataset = random_split(
-        dataset,
-        [train_size, val_size],
-        generator=torch.Generator().manual_seed(args.seed),
-    )
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=False)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, drop_last=False)
+    tokenizer = load_hf_tokenizer(args.tokenizer) if args.tokenizer else None
+    if tokenizer is not None:
+        tokenizer_vocab_size = get_tokenizer_vocab_size(tokenizer)
+        if args.vocab_size != tokenizer_vocab_size:
+            print(
+                f"overriding --vocab-size {args.vocab_size} "
+                f"with tokenizer vocab_size {tokenizer_vocab_size}"
+            )
+            args.vocab_size = tokenizer_vocab_size
+    token_bytes = None
+    if args.tokenizer:
+        token_bytes_path = Path(args.tokenizer).expanduser() / "token_bytes.pt"
+        if token_bytes_path.is_file():
+            token_bytes = torch.load(token_bytes_path, map_location=args.device)
+
+    if args.data_format == "autoresearch":
+        if args.eval_tokens is None:
+            args.eval_tokens = 40 * 524288
+        train_loader, val_loader, data_info = load_autoresearch_loaders(args, tokenizer)
+        train_size = None
+        val_size = None
+    else:
+        dataset = load_training_dataset(args, tokenizer=tokenizer)
+        fixed_val_dataset = load_validation_dataset(args, tokenizer=tokenizer)
+        if fixed_val_dataset is None:
+            val_size = max(1, min(len(dataset) // 10, 512))
+            train_size = len(dataset) - val_size
+            train_dataset, val_dataset = random_split(
+                dataset,
+                [train_size, val_size],
+                generator=torch.Generator().manual_seed(args.seed),
+            )
+        else:
+            train_dataset = dataset
+            val_dataset = fixed_val_dataset
+            train_size = len(train_dataset)
+            val_size = len(val_dataset)
+        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=False)
+        val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, drop_last=False)
+        data_info = {
+            "format": "text",
+            "dataset": args.dataset,
+            "data": args.data,
+            "val_data": args.val_data,
+            "tokenizer": args.tokenizer,
+            "max_data_chars": args.max_data_chars,
+            "max_val_chars": args.max_val_chars,
+            "train_size": train_size,
+            "val_size": val_size,
+            "eval_tokens": args.eval_tokens,
+        }
+
+    eval_iters = args.eval_iters
+    if args.eval_tokens is not None:
+        eval_iters = max(1, args.eval_tokens // (args.batch_size * args.block_size))
 
     config = make_config(args)
-    model = NanoqwenForCausalLM(config).to(args.device)
+    model = model_from_config(config).to(args.device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    data_iter = infinite_loader(train_loader)
+    data_iter = train_loader if args.data_format == "autoresearch" else infinite_loader(train_loader)
+    output_dir = Path(args.out_dir)
+    num_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-    print(f"parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
+    write_json(
+        output_dir / "training_params.json",
+        {
+            "args": vars(args),
+            "config": config.to_dict(),
+            "data": data_info,
+            "parameters": {
+                "total": num_params,
+                "trainable": trainable_params,
+            },
+        },
+    )
+
+    print(f"parameters: {num_params / 1e6:.2f}M")
     progress = tqdm(range(1, args.steps + 1), desc="train")
+    train_start = time.monotonic()
+    final_step = 0
+    last_loss = None
     for step in progress:
         loss = batch_loss(model, next(data_iter), args.device)
+        last_loss = loss.item()
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
+        final_step = step
 
         progress.set_postfix(loss=f"{loss.item():.3f}", ppl=f"{math.exp(min(loss.item(), 20)):.1f}")
 
         if args.eval_every > 0 and step % args.eval_every == 0:
-            val_loss = estimate_loss(model, val_loader, args.device, args.eval_iters)
+            val_loss = estimate_loss(model, val_loader, args.device, eval_iters)
             print(f"step {step}: train_loss={loss.item():.4f} val_loss={val_loss:.4f}")
 
         if args.save_every > 0 and step % args.save_every == 0:
             save_checkpoint(model, args.out_dir, step=step, optimizer=optimizer)
 
-    save_checkpoint(model, args.out_dir, step=args.steps, optimizer=optimizer)
-    print(f"saved checkpoint to {Path(args.out_dir).resolve()}")
+        if args.time_budget_sec is not None and (time.monotonic() - train_start) >= args.time_budget_sec:
+            break
+
+    elapsed_sec = time.monotonic() - train_start
+    final_metrics = estimate_metrics(
+        model,
+        val_loader,
+        args.device,
+        eval_iters,
+        token_bytes=token_bytes,
+    )
+    final_val_loss = float(final_metrics["loss"])
+    final_val_bpb = final_metrics["bpb"]
+    save_checkpoint(model, args.out_dir, step=final_step, optimizer=optimizer)
+    write_json(
+        output_dir / "result.json",
+        {
+            "elapsed_sec": elapsed_sec,
+            "parameters": num_params,
+            "step": final_step,
+            "train_loss": last_loss,
+            "val_loss": final_val_loss,
+            "val_ppl": math.exp(min(final_val_loss, 20)),
+            "val_bpb": final_val_bpb,
+        },
+    )
+    bpb_text = f" val_bpb={final_val_bpb:.6f}" if final_val_bpb is not None else ""
+    print(f"final: step={final_step} val_loss={final_val_loss:.4f}{bpb_text} elapsed_sec={elapsed_sec:.1f}")
+    print(f"saved checkpoint to {output_dir.resolve()}")
 
 
 if __name__ == "__main__":

@@ -241,6 +241,15 @@ def _source_paths_for_split(
     raise ValueError("split must be 'train' or 'val'")
 
 
+def parquet_source_paths_for_split(
+    name: str,
+    split: str,
+    num_shards: int | None = None,
+    data_dir: str | Path | None = None,
+) -> list[Path]:
+    return _source_paths_for_split(name, split, num_shards, data_dir)
+
+
 def materialize_text_dataset(
     name: str,
     split: str = "train",

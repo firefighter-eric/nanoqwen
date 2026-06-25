@@ -23,6 +23,7 @@ hf = [
 ]
 data = [
   "pyarrow>=15.0",
+  "tiktoken>=0.7",
 ]
 vision = [
   "pillow>=10.0",

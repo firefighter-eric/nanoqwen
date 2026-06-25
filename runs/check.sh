@@ -67,6 +67,15 @@ if [[ "$run_smoke" == "1" ]]; then
   echo "[check] sft smoke"
   bash runs/sft_smoke.sh
 
+  echo "[check] gpt train smoke"
+  bash runs/gpt_smoke.sh
+
+  echo "[check] gpt sft smoke"
+  bash runs/gpt_sft_smoke.sh
+
+  echo "[check] pretrain architecture compare smoke"
+  bash autoresearch/pretrain_arch_compare/run_smoke.sh
+
   echo "[check] dpo smoke"
   bash runs/dpo_smoke.sh
 

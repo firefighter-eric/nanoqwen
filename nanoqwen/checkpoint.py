@@ -8,13 +8,14 @@ from typing import Any
 import torch
 
 from .config import NanoqwenConfig
+from .models import CausalLM, config_from_json_file, model_from_config
 from .model import NanoqwenForCausalLM
 
 SUPPORTED_HF_CAUSAL_LM_TYPES = {"qwen2", "qwen3"}
 
 
 def save_checkpoint(
-    model: NanoqwenForCausalLM,
+    model: CausalLM,
     path: str | Path,
     step: int = 0,
     optimizer: torch.optim.Optimizer | None = None,
@@ -37,10 +38,10 @@ def load_checkpoint(
     path: str | Path,
     map_location: str | torch.device = "cpu",
     load_optimizer: bool = False,
-) -> tuple[NanoqwenForCausalLM, dict[str, Any]]:
+) -> tuple[CausalLM, dict[str, Any]]:
     path = Path(path)
-    config = NanoqwenConfig.from_json_file(path / "config.json")
-    model = NanoqwenForCausalLM(config)
+    config = config_from_json_file(path / "config.json")
+    model = model_from_config(config)
     payload = torch.load(path / "checkpoint.pt", map_location=map_location)
     model.load_state_dict(payload["model"])
     metadata = {
