@@ -78,6 +78,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional wall-clock training budget, excluding setup. Stops after this many seconds.",
     )
+    parser.add_argument(
+        "--time-budget-warmup-steps",
+        type=int,
+        default=0,
+        help="Exclude this many initial optimizer steps from the time budget.",
+    )
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--block-size", type=int, default=128)
     parser.add_argument(
@@ -237,6 +243,8 @@ def resolve_grad_accum_steps(args: argparse.Namespace) -> int:
         raise ValueError("--block-size must be positive")
     if args.grad_accum_steps <= 0:
         raise ValueError("--grad-accum-steps must be positive")
+    if getattr(args, "time_budget_warmup_steps", 0) < 0:
+        raise ValueError("--time-budget-warmup-steps must be non-negative")
     if args.total_batch_tokens is None:
         return args.grad_accum_steps
 
@@ -574,9 +582,11 @@ def main() -> None:
     print(f"compile: mode={args.compile} enabled={compile_enabled}")
     progress = tqdm(range(1, args.steps + 1), desc="train")
     train_start = time.monotonic()
+    budget_elapsed_sec = 0.0
     final_step = 0
     last_loss = None
     for step in progress:
+        step_start = time.monotonic()
         optimizer.zero_grad(set_to_none=True)
         accum_loss = 0.0
         for _ in range(grad_accum_steps):
@@ -610,10 +620,14 @@ def main() -> None:
         if args.save_every > 0 and step % args.save_every == 0:
             save_checkpoint(model, args.out_dir, step=step, optimizer=optimizer)
 
-        if args.time_budget_sec is not None and (time.monotonic() - train_start) >= args.time_budget_sec:
+        step_elapsed_sec = time.monotonic() - step_start
+        if step > args.time_budget_warmup_steps:
+            budget_elapsed_sec += step_elapsed_sec
+
+        if args.time_budget_sec is not None and budget_elapsed_sec >= args.time_budget_sec:
             break
 
-    elapsed_sec = time.monotonic() - train_start
+    wall_elapsed_sec = time.monotonic() - train_start
     final_metrics = estimate_metrics(
         train_model,
         val_loader,
@@ -629,7 +643,9 @@ def main() -> None:
     write_json(
         output_dir / "result.json",
         {
-            "elapsed_sec": elapsed_sec,
+            "elapsed_sec": budget_elapsed_sec,
+            "wall_elapsed_sec": wall_elapsed_sec,
+            "time_budget_warmup_steps": args.time_budget_warmup_steps,
             "parameters": num_params,
             "step": final_step,
             "train_loss": last_loss,
@@ -639,7 +655,10 @@ def main() -> None:
         },
     )
     bpb_text = f" val_bpb={final_val_bpb:.6f}" if final_val_bpb is not None else ""
-    print(f"final: step={final_step} val_loss={final_val_loss:.4f}{bpb_text} elapsed_sec={elapsed_sec:.1f}")
+    print(
+        f"final: step={final_step} val_loss={final_val_loss:.4f}{bpb_text} "
+        f"elapsed_sec={budget_elapsed_sec:.1f} wall_elapsed_sec={wall_elapsed_sec:.1f}"
+    )
     print(f"saved checkpoint to {output_dir.resolve()}")
 
 
