@@ -9,6 +9,9 @@ The full suite aligns the non-model protocol with `../autoresearch`: it loads
 `~/.cache/autoresearch/tokenizer/tokenizer.pkl`, reads climbmix parquet shards
 directly, prepends BOS per document, uses autoresearch-style best-fit packing,
 and evaluates BPB over `40*524288` validation tokens.
+For training batch size, the full suite follows the Karpathy RTX 5080 profile:
+`batch_size=8`, `block_size=2048`, `total_batch_tokens=262144`, which resolves
+to `grad_accum_steps=16` and 128 effective sequences per optimizer step.
 
 The default comparison keeps the shared protocol fixed, but does not force
 parameter counts to match. The Qwen-like config is downscaled from the local

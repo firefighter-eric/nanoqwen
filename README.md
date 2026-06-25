@@ -366,6 +366,9 @@ head_dim=128`；GPT 约 30,462,976 参数，autoresearch NanoGPT 约 50,332,176
 `intermediate_size=1536, kv_heads=2, tie_word_embeddings=true, rope_theta=1e6`，
 约 29,370,880 参数。完整对比使用 `../autoresearch` 的 tokenizer、climbmix
 parquet 文档流、per-doc BOS、best-fit packing 和 `40*524288` token BPB 测评。
+训练 batch 口径按 Karpathy RTX 5080 profile 对齐：micro batch 是
+`8 * 2048 = 16,384` tokens，通过 `total_batch_tokens=262144` 自动得到
+`grad_accum_steps=16`，即每个 optimizer step 的 effective batch 是 128 条序列。
 先准备 autoresearch cache：
 
 ```bash
