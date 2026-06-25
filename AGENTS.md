@@ -143,6 +143,43 @@ uv run pytest -q
 bash runs/check.sh
 ```
 
+涉及 GPT 对比模型或训练/SFT 接口时，至少运行：
+
+```bash
+bash runs/gpt_smoke.sh
+bash runs/gpt_sft_smoke.sh
+```
+
+涉及 GPT vs Qwen-like 预训练架构对比时，运行：
+
+```bash
+bash autoresearch/pretrain_arch_compare/run_smoke.sh
+```
+
+如果改完整对比 tokenizer、数据流或默认完整配置，先确认 autoresearch cache、
+tokenizer、BOS 和 `token_bytes.pt` 路径；不要为了这个检查启动训练：
+
+```bash
+uv run python - <<'PY'
+from pathlib import Path
+import torch
+from dataset.registry import parquet_source_paths_for_split
+from nanoqwen.data import make_autoresearch_packed_loader
+from nanoqwen.tokenizer import load_hf_tokenizer
+
+tok_dir = Path("~/.cache/autoresearch/tokenizer").expanduser()
+tokenizer = load_hf_tokenizer(str(tok_dir))
+token_bytes = torch.load(tok_dir / "token_bytes.pt", map_location="cpu")
+val_paths = parquet_source_paths_for_split("climbmix", "val", num_shards=10)
+x, y = next(make_autoresearch_packed_loader(val_paths, tokenizer, batch_size=2, block_size=32))
+assert tokenizer.vocab_size == 8192
+assert tokenizer.bos_token_id == 8188
+assert int(token_bytes[tokenizer.bos_token_id]) == 0
+assert tuple(x.shape) == (2, 32) and tuple(y.shape) == (2, 32)
+assert int(x[0, 0]) == tokenizer.bos_token_id
+PY
+```
+
 涉及训练、评估、SFT、DPO、web 或 checkpoint import/export 时，运行：
 
 ```bash

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from nanoqwen.config import NanoqwenConfig
@@ -10,6 +11,7 @@ from nanoqwen.data import built_in_tiny_dataset
 from nanoqwen.eval import evaluate_lm_loss, evaluate_multiple_choice_file, score_completion
 from nanoqwen.model import NanoqwenForCausalLM
 from nanoqwen.tokenizer import ByteTokenizer
+from scripts.train import estimate_metrics
 
 
 def test_evaluate_lm_loss_smoke() -> None:
@@ -22,6 +24,34 @@ def test_evaluate_lm_loss_smoke() -> None:
     assert result.perplexity > 1
     assert result.batches == 2
     assert result.tokens == 64
+
+
+def test_estimate_metrics_bpb_masks_zero_byte_tokens() -> None:
+    class UniformModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.config = SimpleNamespace(vocab_size=4)
+
+        def forward(self, input_ids):
+            logits = torch.zeros(*input_ids.shape, self.config.vocab_size)
+            return SimpleNamespace(logits=logits)
+
+    model = UniformModel()
+    input_ids = torch.tensor([[0, 1, 2]])
+    targets = torch.tensor([[1, 2, 0]])
+    token_bytes = torch.tensor([0, 1, 2, 3])
+
+    metrics = estimate_metrics(
+        model,
+        [(input_ids, targets)],
+        device="cpu",
+        eval_iters=1,
+        token_bytes=token_bytes,
+    )
+
+    expected_bpb = (2 * torch.log(torch.tensor(4.0)).item()) / (3 * torch.log(torch.tensor(2.0)).item())
+    assert metrics["loss"] == pytest.approx(torch.log(torch.tensor(4.0)).item())
+    assert metrics["bpb"] == pytest.approx(expected_bpb)
 
 
 class TokenFavoringModel(torch.nn.Module):

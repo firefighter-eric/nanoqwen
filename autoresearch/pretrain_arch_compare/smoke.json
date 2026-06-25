@@ -1,0 +1,38 @@
+{
+  "output_root": "out/autoresearch/pretrain_arch_compare_smoke",
+  "seed": 2026,
+  "steps": 4,
+  "time_budget_sec": null,
+  "batch_size": 2,
+  "block_size": 32,
+  "lr": 0.0003,
+  "weight_decay": 0.1,
+  "eval_every": 2,
+  "eval_iters": 2,
+  "save_every": 0,
+  "device": "cpu",
+  "attn_implementation": "sdpa",
+  "vocab_size": 257,
+  "experiments": [
+    {
+      "id": "gpt_h64_l2_ctx32",
+      "model": "gpt",
+      "hidden_size": 64,
+      "layers": 2,
+      "heads": 4,
+      "dropout": 0.0
+    },
+    {
+      "id": "qwen3_scaled_h64_l2_ctx32",
+      "model": "qwen",
+      "hidden_size": 64,
+      "intermediate_size": 192,
+      "layers": 2,
+      "heads": 4,
+      "kv_heads": 2,
+      "rope_theta": 1000000.0,
+      "tie_word_embeddings": true,
+      "dropout": 0.0
+    }
+  ]
+}

@@ -30,6 +30,14 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def max_context_length(model) -> int | None:
+    if hasattr(model.config, "block_size"):
+        return int(model.config.block_size)
+    if hasattr(model.config, "max_position_embeddings"):
+        return int(model.config.max_position_embeddings)
+    return None
+
+
 def main() -> None:
     args = parse_args()
     model, metadata = load_checkpoint(args.checkpoint, map_location=args.device)
@@ -42,6 +50,11 @@ def main() -> None:
         or (model.config.eos_token_id if isinstance(model.config.eos_token_id, int) else None)
         or 0
     )
+    context_length = max_context_length(model)
+    if context_length is not None and args.block_size > context_length:
+        raise ValueError(
+            f"--block-size {args.block_size} exceeds checkpoint context length {context_length}"
+        )
 
     dataset = SupervisedTokenDataset.from_jsonl(
         args.data,
