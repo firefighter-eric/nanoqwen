@@ -2,8 +2,9 @@
 
 Karpathy's `autoresearch` keeps comparisons fair by fixing the protocol and
 comparing runs with the same metric. This suite applies that idea to nanoqwen's
-pretraining path: GPT and Qwen-like models use the same tokenizer, data path,
-context length, batch size, optimizer settings, seed, and time/step budget.
+pretraining path: GPT, autoresearch NanoGPT, and Qwen-like models use the same
+tokenizer, data path, context length, batch size, optimizer settings, seed, and
+time/step budget.
 The full suite aligns the non-model protocol with `../autoresearch`: it loads
 `~/.cache/autoresearch/tokenizer/tokenizer.pkl`, reads climbmix parquet shards
 directly, prepends BOS per document, uses autoresearch-style best-fit packing,
@@ -21,9 +22,12 @@ parameter counts to match. The Qwen-like config is downscaled from the local
 | id | architecture | core shape | parameters |
 | --- | --- | --- | ---: |
 | `gpt_h512_l8_ctx2048` | GPT-2/nanoGPT-style | vocab=8192, hidden=512, layers=8, heads=4, head_dim=128, context=2048 | 30,462,976 |
+| `nanogpt_ar_h512_l8_ctx2048` | autoresearch NanoGPT | vocab=8192, hidden=512, layers=8, heads=4, kv_heads=4, head_dim=128, context=2048, window=L, value embeddings | 50,332,176 |
 | `qwen3_scaled_h512_l8_ctx2048` | Qwen3-proportional | vocab=8192, hidden=512, layers=8, heads=4, kv_heads=2, head_dim=128, intermediate=1536, context=2048 | 29,370,880 |
 
-The Qwen-like model is about 96.4% of the GPT parameter count in this setup.
+The autoresearch NanoGPT model is larger because it includes untied output
+weights and alternating value embeddings from `../autoresearch/train.py`. The
+Qwen-like model is about 96.4% of the vanilla GPT parameter count in this setup.
 That difference is intentional: the Qwen side preserves the Qwen3-0.6B shape
 ratios instead of compensating with an artificial MLP size.
 

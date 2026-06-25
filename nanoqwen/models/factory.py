@@ -5,10 +5,11 @@ from pathlib import Path
 
 from ..config import NanoqwenConfig
 from .gpt import GPTConfig, GPTForCausalLM
+from .nanogpt import NanoGPTConfig, NanoGPTForCausalLM
 from .qwen import NanoqwenForCausalLM
 
-ModelConfig = NanoqwenConfig | GPTConfig
-CausalLM = NanoqwenForCausalLM | GPTForCausalLM
+ModelConfig = NanoqwenConfig | GPTConfig | NanoGPTConfig
+CausalLM = NanoqwenForCausalLM | GPTForCausalLM | NanoGPTForCausalLM
 
 QWEN_MODEL_TYPES = {"qwen2", "qwen3"}
 
@@ -17,6 +18,8 @@ def config_from_dict(data: dict) -> ModelConfig:
     model_type = data.get("model_type", "qwen3")
     if model_type == "gpt":
         return GPTConfig.from_dict(data)
+    if model_type == "nanogpt":
+        return NanoGPTConfig.from_dict(data)
     if model_type in QWEN_MODEL_TYPES:
         return NanoqwenConfig.from_dict(data)
     raise ValueError(f"Unsupported native model_type={model_type!r}")
@@ -30,6 +33,8 @@ def config_from_json_file(path: str | Path) -> ModelConfig:
 def model_from_config(config: ModelConfig) -> CausalLM:
     if isinstance(config, GPTConfig):
         return GPTForCausalLM(config)
+    if isinstance(config, NanoGPTConfig):
+        return NanoGPTForCausalLM(config)
     if isinstance(config, NanoqwenConfig):
         return NanoqwenForCausalLM(config)
     raise TypeError(f"Unsupported native config class: {type(config).__name__}")
