@@ -1,5 +1,5 @@
 {
-  "output_root": "out/autoresearch/pretrain_arch_compare_qwen3_scaled_sdpa",
+  "output_root": "out/autoresearch/pretrain_arch_compare_qwen3_scaled_sdpa_compile",
   "seed": 2026,
   "steps": 1000,
   "time_budget_sec": 300,
@@ -13,6 +13,7 @@
   "save_every": 0,
   "device": "cuda",
   "mixed_precision": "auto",
+  "compile": "on",
   "attn_implementation": "sdpa",
   "vocab_size": 8192,
   "data_format": "autoresearch",
@@ -30,12 +31,12 @@
       "dropout": 0.0
     },
     {
-      "id": "nanogpt_ar_h512_l8_ctx2048",
+      "id": "nanogpt_ar_h384_l8_ctx2048",
       "model": "nanogpt",
-      "hidden_size": 512,
+      "hidden_size": 384,
       "layers": 8,
-      "heads": 4,
-      "kv_heads": 4,
+      "heads": 3,
+      "kv_heads": 3,
       "window_pattern": "L"
     },
     {

@@ -93,6 +93,7 @@ def train_command(
         ("save_every", "--save-every"),
         ("device", "--device"),
         ("mixed_precision", "--mixed-precision"),
+        ("compile", "--compile"),
         ("seed", "--seed"),
         ("vocab_size", "--vocab-size"),
         ("hidden_size", "--hidden-size"),

@@ -13,6 +13,7 @@
   "save_every": 0,
   "device": "cpu",
   "mixed_precision": "none",
+  "compile": "off",
   "attn_implementation": "sdpa",
   "vocab_size": 257,
   "experiments": [
