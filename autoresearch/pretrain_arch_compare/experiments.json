@@ -3,6 +3,7 @@
   "seed": 2026,
   "steps": 1000,
   "time_budget_sec": 300,
+  "time_budget_warmup_steps": 10,
   "batch_size": 8,
   "block_size": 2048,
   "total_batch_tokens": 262144,

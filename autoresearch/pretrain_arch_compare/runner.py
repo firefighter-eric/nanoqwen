@@ -81,6 +81,7 @@ def train_command(
         ("max_val_chars", "--max-val-chars"),
         ("steps", "--steps"),
         ("time_budget_sec", "--time-budget-sec"),
+        ("time_budget_warmup_steps", "--time-budget-warmup-steps"),
         ("batch_size", "--batch-size"),
         ("block_size", "--block-size"),
         ("grad_accum_steps", "--grad-accum-steps"),
