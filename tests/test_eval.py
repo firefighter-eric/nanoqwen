@@ -11,7 +11,7 @@ from nanoqwen.data import built_in_tiny_dataset
 from nanoqwen.eval import evaluate_lm_loss, evaluate_multiple_choice_file, score_completion
 from nanoqwen.model import NanoqwenForCausalLM
 from nanoqwen.tokenizer import ByteTokenizer
-from scripts.train import estimate_metrics
+from scripts.train import estimate_metrics, resolve_grad_accum_steps
 
 
 def test_evaluate_lm_loss_smoke() -> None:
@@ -52,6 +52,29 @@ def test_estimate_metrics_bpb_masks_zero_byte_tokens() -> None:
     expected_bpb = (2 * torch.log(torch.tensor(4.0)).item()) / (3 * torch.log(torch.tensor(2.0)).item())
     assert metrics["loss"] == pytest.approx(torch.log(torch.tensor(4.0)).item())
     assert metrics["bpb"] == pytest.approx(expected_bpb)
+
+
+def test_resolve_grad_accum_steps_from_total_batch_tokens() -> None:
+    args = SimpleNamespace(
+        batch_size=8,
+        block_size=2048,
+        grad_accum_steps=1,
+        total_batch_tokens=262144,
+    )
+
+    assert resolve_grad_accum_steps(args) == 16
+
+
+def test_resolve_grad_accum_steps_rejects_misaligned_total_tokens() -> None:
+    args = SimpleNamespace(
+        batch_size=8,
+        block_size=2048,
+        grad_accum_steps=1,
+        total_batch_tokens=262145,
+    )
+
+    with pytest.raises(ValueError, match="divisible"):
+        resolve_grad_accum_steps(args)
 
 
 class TokenFavoringModel(torch.nn.Module):

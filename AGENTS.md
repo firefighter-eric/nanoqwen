@@ -164,6 +164,10 @@ bash runs/gpt_sft_smoke.sh
 bash autoresearch/pretrain_arch_compare/run_smoke.sh
 ```
 
+完整对比的 batch 口径要和 `../autoresearch` 对齐：RTX 5080 profile 是
+`batch_size=8`、`block_size=2048`、`total_batch_tokens=262144`，即
+`grad_accum_steps=16` 和 128 条序列的 effective batch。
+
 如果改完整对比 tokenizer、数据流或默认完整配置，先确认 autoresearch cache、
 tokenizer、BOS 和 `token_bytes.pt` 路径；不要为了这个检查启动训练：
 

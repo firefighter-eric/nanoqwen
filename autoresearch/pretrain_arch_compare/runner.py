@@ -83,6 +83,8 @@ def train_command(
         ("time_budget_sec", "--time-budget-sec"),
         ("batch_size", "--batch-size"),
         ("block_size", "--block-size"),
+        ("grad_accum_steps", "--grad-accum-steps"),
+        ("total_batch_tokens", "--total-batch-tokens"),
         ("lr", "--lr"),
         ("weight_decay", "--weight-decay"),
         ("eval_every", "--eval-every"),

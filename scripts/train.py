@@ -79,6 +79,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--block-size", type=int, default=128)
+    parser.add_argument(
+        "--grad-accum-steps",
+        type=int,
+        default=1,
+        help="Number of micro-batches to accumulate before each optimizer step.",
+    )
+    parser.add_argument(
+        "--total-batch-tokens",
+        type=int,
+        default=None,
+        help="Optional effective tokens per optimizer step; overrides --grad-accum-steps.",
+    )
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=0.1)
     parser.add_argument("--eval-every", type=int, default=50)
@@ -155,6 +167,27 @@ def batch_loss(model: CausalLM, batch: tuple[torch.Tensor, torch.Tensor], device
     input_ids, targets = (tensor.to(device) for tensor in batch)
     logits = model(input_ids=input_ids).logits
     return F.cross_entropy(logits.reshape(-1, model.config.vocab_size), targets.reshape(-1))
+
+
+def resolve_grad_accum_steps(args: argparse.Namespace) -> int:
+    if args.batch_size <= 0:
+        raise ValueError("--batch-size must be positive")
+    if args.block_size <= 0:
+        raise ValueError("--block-size must be positive")
+    if args.grad_accum_steps <= 0:
+        raise ValueError("--grad-accum-steps must be positive")
+    if args.total_batch_tokens is None:
+        return args.grad_accum_steps
+
+    micro_batch_tokens = args.batch_size * args.block_size
+    if args.total_batch_tokens <= 0:
+        raise ValueError("--total-batch-tokens must be positive")
+    if args.total_batch_tokens % micro_batch_tokens != 0:
+        raise ValueError(
+            "--total-batch-tokens must be divisible by "
+            f"--batch-size * --block-size ({micro_batch_tokens})"
+        )
+    return args.total_batch_tokens // micro_batch_tokens
 
 
 def load_training_dataset(args: argparse.Namespace, tokenizer=None):
@@ -406,6 +439,10 @@ def main() -> None:
     if args.eval_tokens is not None:
         eval_iters = max(1, args.eval_tokens // (args.batch_size * args.block_size))
 
+    grad_accum_steps = resolve_grad_accum_steps(args)
+    effective_batch_tokens = args.batch_size * args.block_size * grad_accum_steps
+    effective_batch_sequences = args.batch_size * grad_accum_steps
+
     config = make_config(args)
     model = model_from_config(config).to(args.device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -424,28 +461,46 @@ def main() -> None:
                 "total": num_params,
                 "trainable": trainable_params,
             },
+            "batching": {
+                "micro_batch_sequences": args.batch_size,
+                "micro_batch_tokens": args.batch_size * args.block_size,
+                "grad_accum_steps": grad_accum_steps,
+                "effective_batch_sequences": effective_batch_sequences,
+                "effective_batch_tokens": effective_batch_tokens,
+            },
         },
     )
 
     print(f"parameters: {num_params / 1e6:.2f}M")
+    print(
+        "batching: "
+        f"micro_sequences={args.batch_size} "
+        f"micro_tokens={args.batch_size * args.block_size} "
+        f"grad_accum_steps={grad_accum_steps} "
+        f"effective_sequences={effective_batch_sequences} "
+        f"effective_tokens={effective_batch_tokens}"
+    )
     progress = tqdm(range(1, args.steps + 1), desc="train")
     train_start = time.monotonic()
     final_step = 0
     last_loss = None
     for step in progress:
-        loss = batch_loss(model, next(data_iter), args.device)
-        last_loss = loss.item()
         optimizer.zero_grad(set_to_none=True)
-        loss.backward()
+        accum_loss = 0.0
+        for _ in range(grad_accum_steps):
+            loss = batch_loss(model, next(data_iter), args.device)
+            accum_loss += float(loss.detach().item())
+            (loss / grad_accum_steps).backward()
+        last_loss = accum_loss / grad_accum_steps
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         final_step = step
 
-        progress.set_postfix(loss=f"{loss.item():.3f}", ppl=f"{math.exp(min(loss.item(), 20)):.1f}")
+        progress.set_postfix(loss=f"{last_loss:.3f}", ppl=f"{math.exp(min(last_loss, 20)):.1f}")
 
         if args.eval_every > 0 and step % args.eval_every == 0:
             val_loss = estimate_loss(model, val_loader, args.device, eval_iters)
-            print(f"step {step}: train_loss={loss.item():.4f} val_loss={val_loss:.4f}")
+            print(f"step {step}: train_loss={last_loss:.4f} val_loss={val_loss:.4f}")
 
         if args.save_every > 0 and step % args.save_every == 0:
             save_checkpoint(model, args.out_dir, step=step, optimizer=optimizer)

@@ -5,6 +5,7 @@
   "time_budget_sec": null,
   "batch_size": 2,
   "block_size": 32,
+  "grad_accum_steps": 2,
   "lr": 0.0003,
   "weight_decay": 0.1,
   "eval_every": 2,
