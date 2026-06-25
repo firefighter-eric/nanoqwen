@@ -6,6 +6,12 @@ Run the five sequential Qwen3-0.6B IMDb SFT experiments:
 bash autoresearch/imdb_sft/run.sh
 ```
 
+Run the same experiment grid on the full IMDb labeled split:
+
+```bash
+bash autoresearch/imdb_sft/run_full.sh
+```
+
 Equivalent Python entrypoint:
 
 ```bash
@@ -32,6 +38,15 @@ metrics are written to
 The checked-in config uses a bounded IMDb slice so the full five-run loop can be
 iterated locally. Increase `train_examples` and `eval_examples`, or set them to
 `null`, for larger runs.
+
+For full IMDb runs, use `experiments_full.json`. It sets `train_examples=null`
+and `eval_examples=null`, which uses all 25,000 labeled training reviews and all
+25,000 labeled test reviews. IMDb does not provide an official validation split;
+the local `unsupervised` split contains 50,000 unlabeled reviews and is not used
+as validation.
+
+`experiments_full_e2.json` is the current full-run training config. It runs two
+epochs with `max_length=4096` and model-level gradient checkpointing enabled.
 
 ## Recorded Results
 

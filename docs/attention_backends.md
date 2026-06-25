@@ -5,8 +5,8 @@ forward benchmark。
 
 ## 支持范围
 
-通用 `nanoqwen/model.py`、`qwen3_model.py` 和 Qwen3.5 的 `full_attention` 层
-支持以下 backend：
+通用 `nanoqwen/models/qwen.py`、`nanoqwen/models/qwen3.py` 和 Qwen3.5 的
+`full_attention` 层支持以下 backend：
 
 ```text
 eager

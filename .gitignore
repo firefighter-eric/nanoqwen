@@ -7,7 +7,7 @@ __pycache__/
 
 out/
 data/
-models/
+/models/
 runs/**/*.log
 
 .DS_Store
