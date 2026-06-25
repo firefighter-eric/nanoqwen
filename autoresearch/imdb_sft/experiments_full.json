@@ -1,0 +1,45 @@
+{
+  "model_path": "models/Qwen/Qwen3-0.6B",
+  "output_root": "out/autoresearch/imdb_sft_full",
+  "train_split": "train",
+  "eval_split": "test",
+  "train_examples": null,
+  "eval_examples": null,
+  "max_length": 256,
+  "micro_batch_size": 1,
+  "attn_implementation": "sdpa",
+  "dtype": "bfloat16",
+  "seed": 2026,
+  "experiments": [
+    {
+      "id": "exp01_baseline_e3_lr1e-5_b16",
+      "epochs": 3,
+      "lr": 1e-5,
+      "batch_size": 16
+    },
+    {
+      "id": "exp02_low_lr_e3_lr5e-6_b16",
+      "epochs": 3,
+      "lr": 5e-6,
+      "batch_size": 16
+    },
+    {
+      "id": "exp03_high_lr_e3_lr2e-5_b16",
+      "epochs": 3,
+      "lr": 2e-5,
+      "batch_size": 16
+    },
+    {
+      "id": "exp04_longer_e5_lr1e-5_b16",
+      "epochs": 5,
+      "lr": 1e-5,
+      "batch_size": 16
+    },
+    {
+      "id": "exp05_bigger_batch_e3_lr1e-5_b32",
+      "epochs": 3,
+      "lr": 1e-5,
+      "batch_size": 32
+    }
+  ]
+}

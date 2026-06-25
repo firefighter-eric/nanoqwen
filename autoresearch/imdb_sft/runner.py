@@ -59,6 +59,7 @@ class SuiteConfig:
     dtype: str
     seed: int
     experiments: list[ExperimentConfig]
+    gradient_checkpointing: bool = False
 
 
 @dataclass
@@ -421,6 +422,7 @@ def training_params(
             "model_path": suite.model_path,
             "dtype": suite.dtype,
             "attn_implementation": suite.attn_implementation,
+            "gradient_checkpointing": suite.gradient_checkpointing,
             "pad_token_id": pad_token_id,
         },
         "optimization": {
@@ -459,6 +461,8 @@ def load_base_model(config: SuiteConfig, device: str) -> Qwen3ForCausalLM:
         attn_implementation=config.attn_implementation,
     )
     model.config.use_cache = False
+    if config.gradient_checkpointing:
+        model.gradient_checkpointing_enable()
     return model.to(device)
 
 

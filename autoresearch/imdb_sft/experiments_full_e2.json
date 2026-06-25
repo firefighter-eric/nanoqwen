@@ -1,0 +1,22 @@
+{
+  "model_path": "models/Qwen/Qwen3-0.6B",
+  "output_root": "out/autoresearch/imdb_sft_full_e2_len4096_gc",
+  "train_split": "train",
+  "eval_split": "test",
+  "train_examples": null,
+  "eval_examples": null,
+  "max_length": 4096,
+  "micro_batch_size": 1,
+  "attn_implementation": "sdpa",
+  "dtype": "bfloat16",
+  "gradient_checkpointing": true,
+  "seed": 2026,
+  "experiments": [
+    {
+      "id": "full_e2_len4096_gc_lr1e-5_b16",
+      "epochs": 2,
+      "lr": 1e-5,
+      "batch_size": 16
+    }
+  ]
+}
