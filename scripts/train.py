@@ -110,6 +110,12 @@ def parse_args() -> argparse.Namespace:
         default="auto",
         help="Mixed precision mode. auto uses bf16 on CUDA/MPS and fp32 on CPU.",
     )
+    parser.add_argument(
+        "--compile",
+        choices=("auto", "on", "off"),
+        default="off",
+        help="Compile model forward with torch.compile. auto enables it on CUDA.",
+    )
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--vocab-size", type=int, default=257)
     parser.add_argument("--hidden-size", type=int, default=128)
@@ -197,16 +203,31 @@ def dtype_name(dtype: torch.dtype | None) -> str:
     return "none" if dtype is None else str(dtype).removeprefix("torch.")
 
 
+def model_vocab_size(model: CausalLM) -> int:
+    return int(model.config.vocab_size)
+
+
+def resolve_compile_enabled(compile_mode: str, device: str | torch.device) -> bool:
+    if compile_mode == "off":
+        return False
+    if compile_mode == "on":
+        return True
+    if compile_mode == "auto":
+        return device_type(device) == "cuda"
+    raise ValueError(f"unknown compile mode: {compile_mode}")
+
+
 def batch_loss(
     model: CausalLM,
     batch: tuple[torch.Tensor, torch.Tensor],
     device: str,
+    vocab_size: int,
     autocast_dtype: torch.dtype | None = None,
 ) -> torch.Tensor:
     input_ids, targets = (tensor.to(device) for tensor in batch)
     with autocast_context(device, autocast_dtype):
         logits = model(input_ids=input_ids).logits
-    return F.cross_entropy(logits.reshape(-1, model.config.vocab_size), targets.reshape(-1))
+    return F.cross_entropy(logits.reshape(-1, vocab_size), targets.reshape(-1))
 
 
 def resolve_grad_accum_steps(args: argparse.Namespace) -> int:
@@ -354,10 +375,12 @@ def estimate_metrics(
     loader: DataLoader,
     device: str,
     eval_iters: int,
+    vocab_size: int | None = None,
     token_bytes: torch.Tensor | None = None,
     autocast_dtype: torch.dtype | None = None,
 ) -> dict[str, float | None]:
     model.eval()
+    vocab_size = vocab_size if vocab_size is not None else model_vocab_size(model)
     losses = []
     total_loss = 0.0
     total_bytes = 0
@@ -368,14 +391,14 @@ def estimate_metrics(
         with autocast_context(device, autocast_dtype):
             logits = model(input_ids=input_ids).logits
         loss = F.cross_entropy(
-            logits.reshape(-1, model.config.vocab_size),
+            logits.reshape(-1, vocab_size),
             targets.reshape(-1),
             reduction="mean",
         )
         losses.append(loss.item())
         if token_bytes is not None:
             loss_flat = F.cross_entropy(
-                logits.reshape(-1, model.config.vocab_size),
+                logits.reshape(-1, vocab_size),
                 targets.reshape(-1),
                 reduction="none",
             )
@@ -396,9 +419,19 @@ def estimate_loss(
     loader: DataLoader,
     device: str,
     eval_iters: int,
+    vocab_size: int | None = None,
     autocast_dtype: torch.dtype | None = None,
 ) -> float:
-    return float(estimate_metrics(model, loader, device, eval_iters, autocast_dtype=autocast_dtype)["loss"])
+    return float(
+        estimate_metrics(
+            model,
+            loader,
+            device,
+            eval_iters,
+            vocab_size,
+            autocast_dtype=autocast_dtype,
+        )["loss"]
+    )
 
 
 def infinite_loader(loader: DataLoader):
@@ -426,6 +459,7 @@ def main() -> None:
     args = parse_args()
     torch.manual_seed(args.seed)
     autocast_dtype = resolve_autocast_dtype(args.mixed_precision, args.device)
+    compile_enabled = resolve_compile_enabled(args.compile, args.device)
     if device_type(args.device) == "cuda":
         torch.set_float32_matmul_precision("high")
 
@@ -491,6 +525,7 @@ def main() -> None:
 
     config = make_config(args)
     model = model_from_config(config).to(args.device)
+    train_model = torch.compile(model, dynamic=False) if compile_enabled else model
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     data_iter = train_loader if args.data_format == "autoresearch" else infinite_loader(train_loader)
     output_dir = Path(args.out_dir)
@@ -519,6 +554,10 @@ def main() -> None:
                 "autocast_dtype": dtype_name(autocast_dtype),
                 "device_type": device_type(args.device),
             },
+            "compile": {
+                "mode": args.compile,
+                "enabled": compile_enabled,
+            },
         },
     )
 
@@ -532,6 +571,7 @@ def main() -> None:
         f"effective_tokens={effective_batch_tokens}"
     )
     print(f"precision: mixed_precision={args.mixed_precision} autocast_dtype={dtype_name(autocast_dtype)}")
+    print(f"compile: mode={args.compile} enabled={compile_enabled}")
     progress = tqdm(range(1, args.steps + 1), desc="train")
     train_start = time.monotonic()
     final_step = 0
@@ -540,7 +580,13 @@ def main() -> None:
         optimizer.zero_grad(set_to_none=True)
         accum_loss = 0.0
         for _ in range(grad_accum_steps):
-            loss = batch_loss(model, next(data_iter), args.device, autocast_dtype=autocast_dtype)
+            loss = batch_loss(
+                train_model,
+                next(data_iter),
+                args.device,
+                model.config.vocab_size,
+                autocast_dtype=autocast_dtype,
+            )
             accum_loss += float(loss.detach().item())
             (loss / grad_accum_steps).backward()
         last_loss = accum_loss / grad_accum_steps
@@ -551,7 +597,14 @@ def main() -> None:
         progress.set_postfix(loss=f"{last_loss:.3f}", ppl=f"{math.exp(min(last_loss, 20)):.1f}")
 
         if args.eval_every > 0 and step % args.eval_every == 0:
-            val_loss = estimate_loss(model, val_loader, args.device, eval_iters, autocast_dtype=autocast_dtype)
+            val_loss = estimate_loss(
+                train_model,
+                val_loader,
+                args.device,
+                eval_iters,
+                model.config.vocab_size,
+                autocast_dtype=autocast_dtype,
+            )
             print(f"step {step}: train_loss={last_loss:.4f} val_loss={val_loss:.4f}")
 
         if args.save_every > 0 and step % args.save_every == 0:
@@ -562,10 +615,11 @@ def main() -> None:
 
     elapsed_sec = time.monotonic() - train_start
     final_metrics = estimate_metrics(
-        model,
+        train_model,
         val_loader,
         args.device,
         eval_iters,
+        model.config.vocab_size,
         token_bytes=token_bytes,
         autocast_dtype=autocast_dtype,
     )
