@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from typing import Any
+
 import torch
 from torch.nn import functional as F
-
-from .model import NanoqwenForCausalLM
 
 
 def top_k_top_p_filtering(
@@ -30,7 +30,7 @@ def top_k_top_p_filtering(
 
 @torch.no_grad()
 def generate(
-    model: NanoqwenForCausalLM,
+    model: Any,
     input_ids: torch.Tensor,
     max_new_tokens: int,
     temperature: float = 1.0,
@@ -70,4 +70,3 @@ def generate(
         if eos_ids and all(token.item() in eos_ids for token in next_token[:, 0]):
             break
     return generated
-
