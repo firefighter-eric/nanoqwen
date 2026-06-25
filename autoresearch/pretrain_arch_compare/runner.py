@@ -99,6 +99,7 @@ def train_command(
         ("kv_heads", "--kv-heads"),
         ("dropout", "--dropout"),
         ("rope_theta", "--rope-theta"),
+        ("window_pattern", "--window-pattern"),
         ("attn_implementation", "--attn-implementation"),
     ]:
         append_arg(cmd, flag, experiment_value(suite, experiment, key))
@@ -162,7 +163,7 @@ def run_suite(config_path: str | Path) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run GPT vs Qwen-like pretraining architecture suites.")
+    parser = argparse.ArgumentParser(description="Run GPT, autoresearch NanoGPT, and Qwen-like pretraining suites.")
     subparsers = parser.add_subparsers(dest="command", required=True)
     suite_parser = subparsers.add_parser("run-suite")
     suite_parser.add_argument("--config", default="autoresearch/pretrain_arch_compare/experiments.json")

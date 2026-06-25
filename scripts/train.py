@@ -18,7 +18,7 @@ from nanoqwen.checkpoint import save_checkpoint
 from nanoqwen.attention import ATTN_IMPLEMENTATION_CHOICES
 from nanoqwen.config import NanoqwenConfig
 from nanoqwen.data import built_in_tiny_dataset, load_text_dataset, make_autoresearch_packed_loader
-from nanoqwen.models import CausalLM, GPTConfig, ModelConfig, model_from_config
+from nanoqwen.models import CausalLM, GPTConfig, ModelConfig, NanoGPTConfig, model_from_config
 from nanoqwen.tokenizer import load_hf_tokenizer
 from dataset.registry import (
     available_text_datasets,
@@ -60,7 +60,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--download-workers", type=int, default=4)
     parser.add_argument("--out-dir", type=str, default="out/train")
-    parser.add_argument("--model", choices=("qwen", "gpt"), default="qwen")
+    parser.add_argument("--model", choices=("qwen", "gpt", "nanogpt"), default="qwen")
     parser.add_argument(
         "--data-format",
         choices=("text", "autoresearch"),
@@ -97,9 +97,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--intermediate-size", type=int, default=384)
     parser.add_argument("--layers", type=int, default=2)
     parser.add_argument("--heads", type=int, default=4)
-    parser.add_argument("--kv-heads", type=int, default=2)
+    parser.add_argument("--kv-heads", type=int, default=None)
     parser.add_argument("--dropout", type=float, default=0.0)
     parser.add_argument("--rope-theta", type=float, default=1_000_000.0)
+    parser.add_argument("--window-pattern", default="L")
     parser.add_argument("--no-gpt-bias", action="store_true")
     parser.add_argument("--tie-word-embeddings", action="store_true")
     parser.add_argument("--no-qk-norm", action="store_true")
@@ -120,6 +121,18 @@ def make_config(args: argparse.Namespace) -> ModelConfig:
             attn_implementation=args.attn_implementation,
             eos_token_id=args.vocab_size - 1,
         )
+    if args.model == "nanogpt":
+        return NanoGPTConfig(
+            sequence_len=args.block_size,
+            vocab_size=args.vocab_size,
+            n_layer=args.layers,
+            n_head=args.heads,
+            n_kv_head=args.kv_heads or args.heads,
+            n_embd=args.hidden_size,
+            window_pattern=args.window_pattern,
+            attn_implementation=args.attn_implementation,
+            eos_token_id=args.vocab_size - 1,
+        )
 
     return NanoqwenConfig(
         vocab_size=args.vocab_size,
@@ -127,7 +140,7 @@ def make_config(args: argparse.Namespace) -> ModelConfig:
         intermediate_size=args.intermediate_size,
         num_hidden_layers=args.layers,
         num_attention_heads=args.heads,
-        num_key_value_heads=args.kv_heads,
+        num_key_value_heads=args.kv_heads or 2,
         head_dim=args.hidden_size // args.heads,
         max_position_embeddings=max(512, args.block_size),
         rope_theta=args.rope_theta,

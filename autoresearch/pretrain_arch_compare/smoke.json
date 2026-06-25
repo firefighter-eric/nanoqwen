@@ -23,6 +23,15 @@
       "dropout": 0.0
     },
     {
+      "id": "nanogpt_ar_h64_l2_ctx32",
+      "model": "nanogpt",
+      "hidden_size": 64,
+      "layers": 2,
+      "heads": 4,
+      "kv_heads": 4,
+      "window_pattern": "L"
+    },
+    {
       "id": "qwen3_scaled_h64_l2_ctx32",
       "model": "qwen",
       "hidden_size": 64,

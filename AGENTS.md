@@ -14,9 +14,12 @@ nanoqwen 是一个可读优先的小型 Qwen 风格 LLM 实验仓库。它有两
   结果对照。
 - `nanoqwen/models/gpt.py`：GPT-2/nanoGPT 风格 decoder-only causal LM，用于
   和 Qwen-like 结构做实验对比。
+- `nanoqwen/models/nanogpt.py`：`../autoresearch/train.py` 的 GPT 变体，用于
+  在同一 tokenizer、数据和 BPB 测评协议下做架构对比。
 
 根目录下的 `model.py`、`qwen3_model.py`、`qwen35_model.py`、`gpt_model.py`
-是兼容导出 shim。新增模型定义默认放在 `nanoqwen/models/`。
+和 `nanogpt_model.py` 是兼容导出 shim。新增模型定义默认放在
+`nanoqwen/models/`。
 
 不要把真实 Qwen 推理路径改成 `AutoModelForCausalLM` wrapper。Transformers 只
 应该出现在 tokenizer/chat-template 辅助、HF-style import/export、smoke 或
@@ -31,6 +34,11 @@ compare 脚本里。
 - `nanoqwen/models/gpt.py`
   - GPT-2/nanoGPT 风格 decoder-only 模型定义。
   - 仍通过 `nanoqwen/gpt_model.py` 兼容导出。
+
+- `nanoqwen/models/nanogpt.py`
+  - autoresearch NanoGPT 变体，包含 RoPE、QK RMSNorm、squared ReLU MLP、
+    value embeddings、residual/x0 scalars 和 logits softcap。
+  - 仍通过 `nanoqwen/nanogpt_model.py` 兼容导出。
 
 - `nanoqwen/models/qwen3.py`
   - 目标模型：`Qwen/Qwen3-0.6B`
@@ -150,7 +158,7 @@ bash runs/gpt_smoke.sh
 bash runs/gpt_sft_smoke.sh
 ```
 
-涉及 GPT vs Qwen-like 预训练架构对比时，运行：
+涉及 GPT / autoresearch NanoGPT / Qwen-like 预训练架构对比时，运行：
 
 ```bash
 bash autoresearch/pretrain_arch_compare/run_smoke.sh
