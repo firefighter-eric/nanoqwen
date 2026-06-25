@@ -92,6 +92,7 @@ def train_command(
         ("eval_tokens", "--eval-tokens"),
         ("save_every", "--save-every"),
         ("device", "--device"),
+        ("mixed_precision", "--mixed-precision"),
         ("seed", "--seed"),
         ("vocab_size", "--vocab-size"),
         ("hidden_size", "--hidden-size"),

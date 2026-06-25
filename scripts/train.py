@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import math
 import sys
@@ -103,6 +104,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--save-every", type=int, default=100)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument(
+        "--mixed-precision",
+        choices=("auto", "none", "bf16"),
+        default="auto",
+        help="Mixed precision mode. auto uses bf16 on CUDA/MPS and fp32 on CPU.",
+    )
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--vocab-size", type=int, default=257)
     parser.add_argument("--hidden-size", type=int, default=128)
@@ -163,9 +170,42 @@ def make_config(args: argparse.Namespace) -> ModelConfig:
     )
 
 
-def batch_loss(model: CausalLM, batch: tuple[torch.Tensor, torch.Tensor], device: str) -> torch.Tensor:
+def device_type(device: str | torch.device) -> str:
+    return torch.device(device).type
+
+
+def resolve_autocast_dtype(mixed_precision: str, device: str | torch.device) -> torch.dtype | None:
+    if mixed_precision == "none":
+        return None
+    if mixed_precision == "bf16":
+        return torch.bfloat16
+    if mixed_precision == "auto":
+        return torch.bfloat16 if device_type(device) in {"cuda", "mps"} else None
+    raise ValueError(f"unknown mixed precision mode: {mixed_precision}")
+
+
+def autocast_context(
+    device: str | torch.device,
+    dtype: torch.dtype | None,
+) -> contextlib.AbstractContextManager:
+    if dtype is None:
+        return contextlib.nullcontext()
+    return torch.amp.autocast(device_type=device_type(device), dtype=dtype)
+
+
+def dtype_name(dtype: torch.dtype | None) -> str:
+    return "none" if dtype is None else str(dtype).removeprefix("torch.")
+
+
+def batch_loss(
+    model: CausalLM,
+    batch: tuple[torch.Tensor, torch.Tensor],
+    device: str,
+    autocast_dtype: torch.dtype | None = None,
+) -> torch.Tensor:
     input_ids, targets = (tensor.to(device) for tensor in batch)
-    logits = model(input_ids=input_ids).logits
+    with autocast_context(device, autocast_dtype):
+        logits = model(input_ids=input_ids).logits
     return F.cross_entropy(logits.reshape(-1, model.config.vocab_size), targets.reshape(-1))
 
 
@@ -315,6 +355,7 @@ def estimate_metrics(
     device: str,
     eval_iters: int,
     token_bytes: torch.Tensor | None = None,
+    autocast_dtype: torch.dtype | None = None,
 ) -> dict[str, float | None]:
     model.eval()
     losses = []
@@ -324,7 +365,8 @@ def estimate_metrics(
         if i >= eval_iters:
             break
         input_ids, targets = (tensor.to(device) for tensor in batch)
-        logits = model(input_ids=input_ids).logits
+        with autocast_context(device, autocast_dtype):
+            logits = model(input_ids=input_ids).logits
         loss = F.cross_entropy(
             logits.reshape(-1, model.config.vocab_size),
             targets.reshape(-1),
@@ -354,8 +396,9 @@ def estimate_loss(
     loader: DataLoader,
     device: str,
     eval_iters: int,
+    autocast_dtype: torch.dtype | None = None,
 ) -> float:
-    return float(estimate_metrics(model, loader, device, eval_iters)["loss"])
+    return float(estimate_metrics(model, loader, device, eval_iters, autocast_dtype=autocast_dtype)["loss"])
 
 
 def infinite_loader(loader: DataLoader):
@@ -382,6 +425,9 @@ def write_json(path: str | Path, payload: dict) -> None:
 def main() -> None:
     args = parse_args()
     torch.manual_seed(args.seed)
+    autocast_dtype = resolve_autocast_dtype(args.mixed_precision, args.device)
+    if device_type(args.device) == "cuda":
+        torch.set_float32_matmul_precision("high")
 
     tokenizer = load_hf_tokenizer(args.tokenizer) if args.tokenizer else None
     if tokenizer is not None:
@@ -468,6 +514,11 @@ def main() -> None:
                 "effective_batch_sequences": effective_batch_sequences,
                 "effective_batch_tokens": effective_batch_tokens,
             },
+            "precision": {
+                "mixed_precision": args.mixed_precision,
+                "autocast_dtype": dtype_name(autocast_dtype),
+                "device_type": device_type(args.device),
+            },
         },
     )
 
@@ -480,6 +531,7 @@ def main() -> None:
         f"effective_sequences={effective_batch_sequences} "
         f"effective_tokens={effective_batch_tokens}"
     )
+    print(f"precision: mixed_precision={args.mixed_precision} autocast_dtype={dtype_name(autocast_dtype)}")
     progress = tqdm(range(1, args.steps + 1), desc="train")
     train_start = time.monotonic()
     final_step = 0
@@ -488,7 +540,7 @@ def main() -> None:
         optimizer.zero_grad(set_to_none=True)
         accum_loss = 0.0
         for _ in range(grad_accum_steps):
-            loss = batch_loss(model, next(data_iter), args.device)
+            loss = batch_loss(model, next(data_iter), args.device, autocast_dtype=autocast_dtype)
             accum_loss += float(loss.detach().item())
             (loss / grad_accum_steps).backward()
         last_loss = accum_loss / grad_accum_steps
@@ -499,7 +551,7 @@ def main() -> None:
         progress.set_postfix(loss=f"{last_loss:.3f}", ppl=f"{math.exp(min(last_loss, 20)):.1f}")
 
         if args.eval_every > 0 and step % args.eval_every == 0:
-            val_loss = estimate_loss(model, val_loader, args.device, eval_iters)
+            val_loss = estimate_loss(model, val_loader, args.device, eval_iters, autocast_dtype=autocast_dtype)
             print(f"step {step}: train_loss={last_loss:.4f} val_loss={val_loss:.4f}")
 
         if args.save_every > 0 and step % args.save_every == 0:
@@ -515,6 +567,7 @@ def main() -> None:
         args.device,
         eval_iters,
         token_bytes=token_bytes,
+        autocast_dtype=autocast_dtype,
     )
     final_val_loss = float(final_metrics["loss"])
     final_val_bpb = final_metrics["bpb"]

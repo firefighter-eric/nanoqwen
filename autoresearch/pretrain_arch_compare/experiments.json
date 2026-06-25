@@ -12,6 +12,7 @@
   "eval_tokens": 20971520,
   "save_every": 0,
   "device": "cuda",
+  "mixed_precision": "auto",
   "attn_implementation": "sdpa",
   "vocab_size": 8192,
   "data_format": "autoresearch",

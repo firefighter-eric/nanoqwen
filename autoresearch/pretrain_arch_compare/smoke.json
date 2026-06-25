@@ -12,6 +12,7 @@
   "eval_iters": 2,
   "save_every": 0,
   "device": "cpu",
+  "mixed_precision": "none",
   "attn_implementation": "sdpa",
   "vocab_size": 257,
   "experiments": [
