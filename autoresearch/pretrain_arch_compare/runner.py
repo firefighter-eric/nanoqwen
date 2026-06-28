@@ -37,6 +37,9 @@ def write_csv(path: str | Path, rows: list[dict[str, Any]]) -> None:
         "val_ppl",
         "val_bpb",
         "output_dir",
+        "status",
+        "returncode",
+        "error",
     ]
     with Path(path).open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=keys)
@@ -95,9 +98,14 @@ def train_command(
         ("scalar_lr", "--scalar-lr"),
         ("adam_beta1", "--adam-beta1"),
         ("adam_beta2", "--adam-beta2"),
+        ("matrix_optimizer", "--matrix-optimizer"),
         ("warmup_ratio", "--warmup-ratio"),
         ("warmdown_ratio", "--warmdown-ratio"),
         ("final_lr_frac", "--final-lr-frac"),
+        ("muon_momentum_start", "--muon-momentum-start"),
+        ("muon_momentum_end", "--muon-momentum-end"),
+        ("muon_momentum_ramp_steps", "--muon-momentum-ramp-steps"),
+        ("weight_decay_schedule", "--weight-decay-schedule"),
         ("eval_every", "--eval-every"),
         ("eval_iters", "--eval-iters"),
         ("eval_tokens", "--eval-tokens"),
@@ -139,6 +147,7 @@ def run_suite(config_path: str | Path) -> None:
 
     rows: list[dict[str, Any]] = []
     gpt_parameters: int | None = None
+    continue_on_error = bool(suite.get("continue_on_error", False))
     for experiment in suite["experiments"]:
         exp_dir = output_root / experiment["id"]
         exp_dir.mkdir(parents=True, exist_ok=True)
@@ -146,7 +155,33 @@ def run_suite(config_path: str | Path) -> None:
         cmd = train_command(suite, experiment, exp_dir)
         print(f"[pretrain-arch] {experiment['id']}: {' '.join(cmd)}")
         with log_path.open("w", encoding="utf-8") as log:
-            subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, check=True)
+            completed = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, check=False)
+
+        if completed.returncode != 0:
+            if not continue_on_error:
+                raise subprocess.CalledProcessError(completed.returncode, cmd)
+            row = {
+                "id": experiment["id"],
+                "model": experiment["model"],
+                "parameters": None,
+                "parameter_ratio_to_gpt": None,
+                "step": None,
+                "elapsed_sec": None,
+                "train_loss": None,
+                "val_loss": None,
+                "val_ppl": None,
+                "val_bpb": None,
+                "output_dir": str(exp_dir),
+                "log_file": str(log_path),
+                "status": "failed",
+                "returncode": completed.returncode,
+                "error": f"training command failed with return code {completed.returncode}",
+            }
+            rows.append(row)
+            write_jsonl(output_root / "results.jsonl", rows)
+            write_csv(output_root / "results.csv", rows)
+            print(f"[pretrain-arch] {experiment['id']}: failed returncode={completed.returncode}")
+            continue
 
         result = read_json(exp_dir / "result.json")
         params = int(result["parameters"])
@@ -165,6 +200,9 @@ def run_suite(config_path: str | Path) -> None:
             "val_bpb": result.get("val_bpb"),
             "output_dir": str(exp_dir),
             "log_file": str(log_path),
+            "status": "ok",
+            "returncode": completed.returncode,
+            "error": None,
         }
         rows.append(row)
         write_jsonl(output_root / "results.jsonl", rows)

@@ -112,9 +112,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scalar-lr", type=float, default=0.5)
     parser.add_argument("--adam-beta1", type=float, default=0.8)
     parser.add_argument("--adam-beta2", type=float, default=0.95)
+    parser.add_argument(
+        "--matrix-optimizer",
+        choices=("muon", "adamw"),
+        default="muon",
+        help="Matrix optimizer inside --optimizer autoresearch.",
+    )
     parser.add_argument("--warmup-ratio", type=float, default=0.0)
     parser.add_argument("--warmdown-ratio", type=float, default=0.62)
     parser.add_argument("--final-lr-frac", type=float, default=0.05)
+    parser.add_argument("--muon-momentum-start", type=float, default=0.85)
+    parser.add_argument("--muon-momentum-end", type=float, default=0.95)
+    parser.add_argument("--muon-momentum-ramp-steps", type=int, default=300)
+    parser.add_argument(
+        "--weight-decay-schedule",
+        choices=("linear", "constant"),
+        default="linear",
+        help="Schedule for matrix weight decay in --optimizer autoresearch.",
+    )
     parser.add_argument("--eval-every", type=int, default=50)
     parser.add_argument("--eval-iters", type=int, default=10)
     parser.add_argument(
@@ -258,13 +273,19 @@ def lr_multiplier(progress: float, warmup_ratio: float, warmdown_ratio: float, f
     return cooldown + (1.0 - cooldown) * final_lr_frac
 
 
-def muon_momentum(step: int) -> float:
-    frac = min(max(step, 0) / 300, 1.0)
-    return (1.0 - frac) * 0.85 + frac * 0.95
+def muon_momentum(step: int, start: float, end: float, ramp_steps: int) -> float:
+    if ramp_steps <= 0:
+        return end
+    frac = min(max(step, 0) / ramp_steps, 1.0)
+    return (1.0 - frac) * start + frac * end
 
 
-def scheduled_weight_decay(weight_decay: float, progress: float) -> float:
-    return weight_decay * (1.0 - min(max(progress, 0.0), 1.0))
+def scheduled_weight_decay(weight_decay: float, progress: float, schedule: str) -> float:
+    if schedule == "constant":
+        return weight_decay
+    if schedule == "linear":
+        return weight_decay * (1.0 - min(max(progress, 0.0), 1.0))
+    raise ValueError(f"unknown weight decay schedule: {schedule}")
 
 
 def optimizer_progress(args: argparse.Namespace, step: int, elapsed_sec: float) -> float:
@@ -281,13 +302,19 @@ def apply_autoresearch_schedule(
 ) -> dict[str, float]:
     progress = optimizer_progress(args, step, elapsed_sec)
     lrm = lr_multiplier(progress, args.warmup_ratio, args.warmdown_ratio, args.final_lr_frac)
-    momentum = muon_momentum(step - 1)
-    weight_decay = scheduled_weight_decay(args.weight_decay, progress)
+    momentum = muon_momentum(
+        step - 1,
+        args.muon_momentum_start,
+        args.muon_momentum_end,
+        args.muon_momentum_ramp_steps,
+    )
+    weight_decay = scheduled_weight_decay(args.weight_decay, progress, args.weight_decay_schedule)
     for group in optimizer.param_groups:
         group["lr"] = group["initial_lr"] * lrm
+        if group.get("role") == "matrix":
+            group["weight_decay"] = weight_decay
         if group.get("kind") == "muon":
             group["momentum"] = momentum
-            group["weight_decay"] = weight_decay
     return {
         "progress": progress,
         "lr_multiplier": lrm,
@@ -345,6 +372,10 @@ def validate_optimizer_args(args: argparse.Namespace) -> None:
         raise ValueError("--final-lr-frac must be between 0 and 1")
     if not 0.0 <= args.adam_beta1 < 1.0 or not 0.0 <= args.adam_beta2 < 1.0:
         raise ValueError("--adam-beta1 and --adam-beta2 must be in [0, 1)")
+    if not 0.0 <= args.muon_momentum_start < 1.0 or not 0.0 <= args.muon_momentum_end < 1.0:
+        raise ValueError("--muon-momentum-start and --muon-momentum-end must be in [0, 1)")
+    if args.muon_momentum_ramp_steps < 0:
+        raise ValueError("--muon-momentum-ramp-steps must be non-negative")
 
 
 def create_optimizer(
@@ -367,6 +398,7 @@ def create_optimizer(
         scalar_lr=args.scalar_lr,
         weight_decay=args.weight_decay,
         adam_betas=(args.adam_beta1, args.adam_beta2),
+        matrix_optimizer=args.matrix_optimizer,
         compile_steps=compile_enabled,
     )
 
@@ -688,9 +720,14 @@ def main() -> None:
                 "matrix_lr": args.matrix_lr,
                 "scalar_lr": args.scalar_lr,
                 "adam_betas": [args.adam_beta1, args.adam_beta2],
+                "matrix_optimizer": args.matrix_optimizer,
                 "warmup_ratio": args.warmup_ratio,
                 "warmdown_ratio": args.warmdown_ratio,
                 "final_lr_frac": args.final_lr_frac,
+                "muon_momentum_start": args.muon_momentum_start,
+                "muon_momentum_end": args.muon_momentum_end,
+                "muon_momentum_ramp_steps": args.muon_momentum_ramp_steps,
+                "weight_decay_schedule": args.weight_decay_schedule,
             },
         },
     )
@@ -707,6 +744,14 @@ def main() -> None:
     print(f"precision: mixed_precision={args.mixed_precision} autocast_dtype={dtype_name(autocast_dtype)}")
     print(f"compile: mode={args.compile} enabled={compile_enabled}")
     print(f"optimizer: {args.optimizer}")
+    if args.optimizer == "autoresearch":
+        print(
+            "autoresearch optimizer: "
+            f"matrix_optimizer={args.matrix_optimizer} "
+            f"weight_decay_schedule={args.weight_decay_schedule} "
+            f"muon_momentum={args.muon_momentum_start}->{args.muon_momentum_end}/"
+            f"{args.muon_momentum_ramp_steps}"
+        )
     progress = tqdm(range(1, args.steps + 1), desc="train")
     train_start = time.monotonic()
     budget_elapsed_sec = 0.0

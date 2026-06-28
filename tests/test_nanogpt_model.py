@@ -56,6 +56,24 @@ def test_nanogpt_autoresearch_optimizer_updates() -> None:
     assert not torch.equal(model.model.transformer.h[0].attn.c_q.weight, matrix_before)
 
 
+def test_nanogpt_autoresearch_optimizer_can_ablate_muon_matrix_updates() -> None:
+    model = tiny_nanogpt().train()
+    optimizer = model.setup_autoresearch_optimizer(matrix_optimizer="adamw", compile_steps=False)
+
+    matrix_groups = [group for group in optimizer.param_groups if group.get("role") == "matrix"]
+    assert matrix_groups
+    assert {group["kind"] for group in matrix_groups} == {"adamw"}
+
+    input_ids = torch.randint(0, model.config.vocab_size, (2, 8))
+    matrix_before = model.model.transformer.h[0].attn.c_q.weight.detach().clone()
+    outputs = model(input_ids=input_ids, labels=input_ids)
+    assert outputs.loss is not None
+    outputs.loss.backward()
+    optimizer.step()
+
+    assert not torch.equal(model.model.transformer.h[0].attn.c_q.weight, matrix_before)
+
+
 def test_nanogpt_autoresearch_training_dtype_casts_high_traffic_embeddings() -> None:
     model = tiny_nanogpt()
     model.prepare_autoresearch_training_dtype(torch.bfloat16)
