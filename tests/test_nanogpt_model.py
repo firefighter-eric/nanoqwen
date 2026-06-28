@@ -36,6 +36,35 @@ def test_nanogpt_backward() -> None:
     assert model.model.transformer.wte.weight.grad is not None
 
 
+def test_nanogpt_autoresearch_optimizer_updates() -> None:
+    model = tiny_nanogpt().train()
+    optimizer = model.setup_autoresearch_optimizer(compile_steps=False)
+
+    group_kinds = {group["kind"] for group in optimizer.param_groups}
+    assert {"adamw", "muon"} <= group_kinds
+    assert all("initial_lr" in group for group in optimizer.param_groups)
+
+    input_ids = torch.randint(0, model.config.vocab_size, (2, 8))
+    lm_head_before = model.lm_head.weight.detach().clone()
+    matrix_before = model.model.transformer.h[0].attn.c_q.weight.detach().clone()
+    outputs = model(input_ids=input_ids, labels=input_ids)
+    assert outputs.loss is not None
+    outputs.loss.backward()
+    optimizer.step()
+
+    assert not torch.equal(model.lm_head.weight, lm_head_before)
+    assert not torch.equal(model.model.transformer.h[0].attn.c_q.weight, matrix_before)
+
+
+def test_nanogpt_autoresearch_training_dtype_casts_high_traffic_embeddings() -> None:
+    model = tiny_nanogpt()
+    model.prepare_autoresearch_training_dtype(torch.bfloat16)
+
+    assert model.model.transformer.wte.weight.dtype == torch.bfloat16
+    assert {embedding.weight.dtype for embedding in model.model.value_embeds.values()} == {torch.bfloat16}
+    assert model.lm_head.weight.dtype == torch.float32
+
+
 def test_nanogpt_sdpa_matches_eager_for_window_attention() -> None:
     torch.manual_seed(1234)
     eager_config = NanoGPTConfig(

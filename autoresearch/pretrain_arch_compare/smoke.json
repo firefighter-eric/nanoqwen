@@ -29,6 +29,8 @@
     {
       "id": "nanogpt_ar_h64_l2_ctx32",
       "model": "nanogpt",
+      "optimizer": "autoresearch",
+      "weight_decay": 0.2,
       "hidden_size": 64,
       "layers": 2,
       "heads": 4,
