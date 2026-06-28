@@ -336,6 +336,103 @@ class NanoGPTForCausalLM(nn.Module):
         for value_embedding in self.model.value_embeds.values():
             torch.nn.init.uniform_(value_embedding.weight, -scale, scale)
 
+    def prepare_autoresearch_training_dtype(self, param_dtype: torch.dtype) -> None:
+        self.model.transformer.wte.to(dtype=param_dtype)
+        for value_embedding in self.model.value_embeds.values():
+            value_embedding.to(dtype=param_dtype)
+
+    def setup_autoresearch_optimizer(
+        self,
+        *,
+        unembedding_lr: float = 0.006,
+        embedding_lr: float = 0.6,
+        matrix_lr: float = 0.04,
+        scalar_lr: float = 0.5,
+        weight_decay: float = 0.2,
+        adam_betas: tuple[float, float] = (0.8, 0.95),
+        compile_steps: bool = False,
+    ) -> torch.optim.Optimizer:
+        from ..optim import MuonAdamW
+
+        model_dim = self.config.n_embd
+        matrix_params = list(self.model.transformer.h.parameters())
+        value_embedding_params = list(self.model.value_embeds.parameters())
+        embedding_params = list(self.model.transformer.wte.parameters())
+        lm_head_params = list(self.lm_head.parameters())
+        resid_params = [self.model.resid_lambdas]
+        x0_params = [self.model.x0_lambdas]
+        expected_params = (
+            len(matrix_params)
+            + len(embedding_params)
+            + len(lm_head_params)
+            + len(value_embedding_params)
+            + len(resid_params)
+            + len(x0_params)
+        )
+        if len(list(self.parameters())) != expected_params:
+            raise RuntimeError("NanoGPT autoresearch optimizer parameter grouping is incomplete")
+
+        dmodel_lr_scale = (model_dim / 768) ** -0.5
+        param_groups: list[dict[str, object]] = [
+            {
+                "kind": "adamw",
+                "params": lm_head_params,
+                "lr": unembedding_lr * dmodel_lr_scale,
+                "betas": adam_betas,
+                "eps": 1e-10,
+                "weight_decay": 0.0,
+            },
+            {
+                "kind": "adamw",
+                "params": embedding_params,
+                "lr": embedding_lr * dmodel_lr_scale,
+                "betas": adam_betas,
+                "eps": 1e-10,
+                "weight_decay": 0.0,
+            },
+            {
+                "kind": "adamw",
+                "params": value_embedding_params,
+                "lr": embedding_lr * dmodel_lr_scale,
+                "betas": adam_betas,
+                "eps": 1e-10,
+                "weight_decay": 0.0,
+            },
+            {
+                "kind": "adamw",
+                "params": resid_params,
+                "lr": scalar_lr * 0.01,
+                "betas": adam_betas,
+                "eps": 1e-10,
+                "weight_decay": 0.0,
+            },
+            {
+                "kind": "adamw",
+                "params": x0_params,
+                "lr": scalar_lr,
+                "betas": (0.96, 0.95),
+                "eps": 1e-10,
+                "weight_decay": 0.0,
+            },
+        ]
+        for shape in sorted({p.shape for p in matrix_params}, key=tuple):
+            group_params = [p for p in matrix_params if p.shape == shape]
+            param_groups.append(
+                {
+                    "kind": "muon",
+                    "params": group_params,
+                    "lr": matrix_lr,
+                    "momentum": 0.95,
+                    "ns_steps": 5,
+                    "beta2": 0.95,
+                    "weight_decay": weight_decay,
+                }
+            )
+        optimizer = MuonAdamW(param_groups, compile_steps=compile_steps)
+        for group in optimizer.param_groups:
+            group["initial_lr"] = group["lr"]
+        return optimizer
+
     def num_scaling_params(self) -> dict[str, int]:
         wte = sum(p.numel() for p in self.model.transformer.wte.parameters())
         value_embeds = sum(p.numel() for p in self.model.value_embeds.parameters())

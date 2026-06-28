@@ -19,7 +19,7 @@ from nanoqwen.checkpoint import save_checkpoint
 from nanoqwen.attention import ATTN_IMPLEMENTATION_CHOICES
 from nanoqwen.config import NanoqwenConfig
 from nanoqwen.data import built_in_tiny_dataset, load_text_dataset, make_autoresearch_packed_loader
-from nanoqwen.models import CausalLM, GPTConfig, ModelConfig, NanoGPTConfig, model_from_config
+from nanoqwen.models import CausalLM, GPTConfig, ModelConfig, NanoGPTConfig, NanoGPTForCausalLM, model_from_config
 from nanoqwen.tokenizer import load_hf_tokenizer
 from dataset.registry import (
     available_text_datasets,
@@ -100,6 +100,21 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=0.1)
+    parser.add_argument(
+        "--optimizer",
+        choices=("adamw", "autoresearch"),
+        default="adamw",
+        help="Optimizer recipe. autoresearch is the Muon+AdamW recipe from ../autoresearch/train.py.",
+    )
+    parser.add_argument("--embedding-lr", type=float, default=0.6)
+    parser.add_argument("--unembedding-lr", type=float, default=0.006)
+    parser.add_argument("--matrix-lr", type=float, default=0.04)
+    parser.add_argument("--scalar-lr", type=float, default=0.5)
+    parser.add_argument("--adam-beta1", type=float, default=0.8)
+    parser.add_argument("--adam-beta2", type=float, default=0.95)
+    parser.add_argument("--warmup-ratio", type=float, default=0.0)
+    parser.add_argument("--warmdown-ratio", type=float, default=0.62)
+    parser.add_argument("--final-lr-frac", type=float, default=0.05)
     parser.add_argument("--eval-every", type=int, default=50)
     parser.add_argument("--eval-iters", type=int, default=10)
     parser.add_argument(
@@ -223,6 +238,64 @@ def resolve_compile_enabled(compile_mode: str, device: str | torch.device) -> bo
     raise ValueError(f"unknown compile mode: {compile_mode}")
 
 
+def sync_device(device: str | torch.device) -> None:
+    device_kind = device_type(device)
+    if device_kind == "cuda" and torch.cuda.is_available():
+        torch.cuda.synchronize()
+    elif device_kind == "mps" and hasattr(torch, "mps"):
+        torch.mps.synchronize()
+
+
+def lr_multiplier(progress: float, warmup_ratio: float, warmdown_ratio: float, final_lr_frac: float) -> float:
+    progress = min(max(progress, 0.0), 1.0)
+    if warmup_ratio > 0 and progress < warmup_ratio:
+        return progress / warmup_ratio
+    if warmdown_ratio <= 0:
+        return 1.0 if progress < 1.0 else final_lr_frac
+    if progress < 1.0 - warmdown_ratio:
+        return 1.0
+    cooldown = (1.0 - progress) / warmdown_ratio
+    return cooldown + (1.0 - cooldown) * final_lr_frac
+
+
+def muon_momentum(step: int) -> float:
+    frac = min(max(step, 0) / 300, 1.0)
+    return (1.0 - frac) * 0.85 + frac * 0.95
+
+
+def scheduled_weight_decay(weight_decay: float, progress: float) -> float:
+    return weight_decay * (1.0 - min(max(progress, 0.0), 1.0))
+
+
+def optimizer_progress(args: argparse.Namespace, step: int, elapsed_sec: float) -> float:
+    if args.time_budget_sec is not None:
+        return min(elapsed_sec / args.time_budget_sec, 1.0)
+    return min((step - 1) / max(1, args.steps), 1.0)
+
+
+def apply_autoresearch_schedule(
+    optimizer: torch.optim.Optimizer,
+    args: argparse.Namespace,
+    step: int,
+    elapsed_sec: float,
+) -> dict[str, float]:
+    progress = optimizer_progress(args, step, elapsed_sec)
+    lrm = lr_multiplier(progress, args.warmup_ratio, args.warmdown_ratio, args.final_lr_frac)
+    momentum = muon_momentum(step - 1)
+    weight_decay = scheduled_weight_decay(args.weight_decay, progress)
+    for group in optimizer.param_groups:
+        group["lr"] = group["initial_lr"] * lrm
+        if group.get("kind") == "muon":
+            group["momentum"] = momentum
+            group["weight_decay"] = weight_decay
+    return {
+        "progress": progress,
+        "lr_multiplier": lrm,
+        "muon_momentum": momentum,
+        "muon_weight_decay": weight_decay,
+    }
+
+
 def batch_loss(
     model: CausalLM,
     batch: tuple[torch.Tensor, torch.Tensor],
@@ -257,6 +330,45 @@ def resolve_grad_accum_steps(args: argparse.Namespace) -> int:
             f"--batch-size * --block-size ({micro_batch_tokens})"
         )
     return args.total_batch_tokens // micro_batch_tokens
+
+
+def validate_optimizer_args(args: argparse.Namespace) -> None:
+    if args.optimizer == "autoresearch" and args.model != "nanogpt":
+        raise ValueError("--optimizer autoresearch is only supported with --model nanogpt")
+    if not 0.0 <= args.warmup_ratio <= 1.0:
+        raise ValueError("--warmup-ratio must be between 0 and 1")
+    if not 0.0 <= args.warmdown_ratio <= 1.0:
+        raise ValueError("--warmdown-ratio must be between 0 and 1")
+    if args.warmup_ratio + args.warmdown_ratio > 1.0:
+        raise ValueError("--warmup-ratio + --warmdown-ratio must be <= 1")
+    if not 0.0 <= args.final_lr_frac <= 1.0:
+        raise ValueError("--final-lr-frac must be between 0 and 1")
+    if not 0.0 <= args.adam_beta1 < 1.0 or not 0.0 <= args.adam_beta2 < 1.0:
+        raise ValueError("--adam-beta1 and --adam-beta2 must be in [0, 1)")
+
+
+def create_optimizer(
+    model: CausalLM,
+    args: argparse.Namespace,
+    autocast_dtype: torch.dtype | None,
+    compile_enabled: bool,
+) -> torch.optim.Optimizer:
+    if args.optimizer == "adamw":
+        return torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+    if not isinstance(model, NanoGPTForCausalLM):
+        raise TypeError("--optimizer autoresearch requires NanoGPTForCausalLM")
+    if autocast_dtype is not None:
+        model.prepare_autoresearch_training_dtype(autocast_dtype)
+    return model.setup_autoresearch_optimizer(
+        unembedding_lr=args.unembedding_lr,
+        embedding_lr=args.embedding_lr,
+        matrix_lr=args.matrix_lr,
+        scalar_lr=args.scalar_lr,
+        weight_decay=args.weight_decay,
+        adam_betas=(args.adam_beta1, args.adam_beta2),
+        compile_steps=compile_enabled,
+    )
 
 
 def load_training_dataset(args: argparse.Namespace, tokenizer=None):
@@ -465,6 +577,7 @@ def write_json(path: str | Path, payload: dict) -> None:
 
 def main() -> None:
     args = parse_args()
+    validate_optimizer_args(args)
     torch.manual_seed(args.seed)
     autocast_dtype = resolve_autocast_dtype(args.mixed_precision, args.device)
     compile_enabled = resolve_compile_enabled(args.compile, args.device)
@@ -533,8 +646,8 @@ def main() -> None:
 
     config = make_config(args)
     model = model_from_config(config).to(args.device)
+    optimizer = create_optimizer(model, args, autocast_dtype, compile_enabled)
     train_model = torch.compile(model, dynamic=False) if compile_enabled else model
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     data_iter = train_loader if args.data_format == "autoresearch" else infinite_loader(train_loader)
     output_dir = Path(args.out_dir)
     num_params = sum(p.numel() for p in model.parameters())
@@ -566,6 +679,19 @@ def main() -> None:
                 "mode": args.compile,
                 "enabled": compile_enabled,
             },
+            "optimizer": {
+                "name": args.optimizer,
+                "lr": args.lr,
+                "weight_decay": args.weight_decay,
+                "embedding_lr": args.embedding_lr,
+                "unembedding_lr": args.unembedding_lr,
+                "matrix_lr": args.matrix_lr,
+                "scalar_lr": args.scalar_lr,
+                "adam_betas": [args.adam_beta1, args.adam_beta2],
+                "warmup_ratio": args.warmup_ratio,
+                "warmdown_ratio": args.warmdown_ratio,
+                "final_lr_frac": args.final_lr_frac,
+            },
         },
     )
 
@@ -580,15 +706,18 @@ def main() -> None:
     )
     print(f"precision: mixed_precision={args.mixed_precision} autocast_dtype={dtype_name(autocast_dtype)}")
     print(f"compile: mode={args.compile} enabled={compile_enabled}")
+    print(f"optimizer: {args.optimizer}")
     progress = tqdm(range(1, args.steps + 1), desc="train")
     train_start = time.monotonic()
     budget_elapsed_sec = 0.0
     final_step = 0
     last_loss = None
     for step in progress:
+        sync_device(args.device)
         step_start = time.monotonic()
         optimizer.zero_grad(set_to_none=True)
         accum_loss = 0.0
+        schedule_info = None
         for _ in range(grad_accum_steps):
             loss = batch_loss(
                 train_model,
@@ -600,11 +729,20 @@ def main() -> None:
             accum_loss += float(loss.detach().item())
             (loss / grad_accum_steps).backward()
         last_loss = accum_loss / grad_accum_steps
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        if math.isnan(last_loss) or last_loss > 100:
+            raise RuntimeError(f"training loss diverged at step {step}: {last_loss}")
+        if args.optimizer == "autoresearch":
+            schedule_info = apply_autoresearch_schedule(optimizer, args, step, budget_elapsed_sec)
+        else:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         final_step = step
+        sync_device(args.device)
 
-        progress.set_postfix(loss=f"{last_loss:.3f}", ppl=f"{math.exp(min(last_loss, 20)):.1f}")
+        postfix = {"loss": f"{last_loss:.3f}", "ppl": f"{math.exp(min(last_loss, 20)):.1f}"}
+        if schedule_info is not None:
+            postfix["lrm"] = f"{schedule_info['lr_multiplier']:.2f}"
+        progress.set_postfix(postfix)
 
         if args.eval_every > 0 and step % args.eval_every == 0:
             val_loss = estimate_loss(

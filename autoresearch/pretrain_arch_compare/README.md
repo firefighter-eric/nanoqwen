@@ -3,8 +3,7 @@
 Karpathy's `autoresearch` keeps comparisons fair by fixing the protocol and
 comparing runs with the same metric. This suite applies that idea to nanoqwen's
 pretraining path: GPT, autoresearch NanoGPT, and Qwen-like models use the same
-tokenizer, data path, context length, batch size, optimizer settings, seed, and
-time/step budget.
+tokenizer, data path, context length, batch size, seed, and time/step budget.
 The full suite aligns the non-model protocol with `../autoresearch`: it loads
 `~/.cache/autoresearch/tokenizer/tokenizer.pkl`, reads climbmix parquet shards
 directly, prepends BOS per document, uses autoresearch-style best-fit packing,
@@ -13,9 +12,11 @@ For training batch size, the full suite follows the Karpathy RTX 5080 profile:
 `batch_size=8`, `block_size=2048`, `total_batch_tokens=262144`, which resolves
 to `grad_accum_steps=16` and 128 effective sequences per optimizer step.
 
-The default comparison keeps the shared protocol fixed, but does not force
-parameter counts to match. The Qwen-like config is downscaled from the local
-`Qwen/Qwen3-0.6B` text config:
+The default comparison keeps the shared data/tokenizer/batch protocol fixed,
+but does not force parameter counts to match. GPT and Qwen-like entries use the
+project AdamW baseline. The NanoGPT entry uses the optional autoresearch
+Muon+AdamW optimizer to reproduce the Karpathy training standard. The Qwen-like
+config is downscaled from the local `Qwen/Qwen3-0.6B` text config:
 
 - `hidden_size`: 1024 -> 512
 - `intermediate_size / hidden_size`: 3072 / 1024 = 3, so 512 -> 1536
@@ -25,18 +26,19 @@ parameter counts to match. The Qwen-like config is downscaled from the local
 | id | architecture | core shape | parameters |
 | --- | --- | --- | ---: |
 | `gpt_h512_l8_ctx2048` | GPT-2/nanoGPT-style | vocab=8192, hidden=512, layers=8, heads=4, head_dim=128, context=2048 | 30,462,976 |
-| `nanogpt_ar_h512_l8_ctx2048` | autoresearch NanoGPT | vocab=8192, hidden=512, layers=8, heads=4, kv_heads=4, head_dim=128, context=2048, window=L, value embeddings | 50,332,176 |
+| `nanogpt_ar_h384_l8_ctx2048` | autoresearch NanoGPT | vocab=8192, hidden=384, layers=8, heads=3, kv_heads=3, head_dim=128, context=2048, window=L, value embeddings | 33,030,544 |
 | `qwen3_scaled_h512_l8_ctx2048` | Qwen3-proportional | vocab=8192, hidden=512, layers=8, heads=4, kv_heads=2, head_dim=128, intermediate=1536, context=2048 | 29,370,880 |
 
-The autoresearch NanoGPT model is larger because it includes untied output
-weights and alternating value embeddings from `../autoresearch/train.py`. The
-Qwen-like model is about 96.4% of the vanilla GPT parameter count in this setup.
-That difference is intentional: the Qwen side preserves the Qwen3-0.6B shape
-ratios instead of compensating with an artificial MLP size.
+The autoresearch NanoGPT model includes untied output weights and alternating
+value embeddings from `../autoresearch/train.py`. In the current RTX 5080 shape
+it is close to the GPT/Qwen-like parameter scale while preserving
+`head_dim=128`.
 
 Note: `run_smoke.sh` stays lightweight and uses the local text path so ordinary
 checks do not require multi-GB climbmix shards or the autoresearch cache. The
-full `experiments.json` is the autoresearch-aligned protocol.
+full `experiments.json` is the autoresearch-aligned protocol. NanoGPT can run
+with `--optimizer autoresearch`; that path is intentionally limited to NanoGPT
+because the parameter grouping follows `../autoresearch/train.py`.
 
 Prepare the autoresearch tokenizer and data first:
 
