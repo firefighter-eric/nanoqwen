@@ -350,9 +350,13 @@ class NanoGPTForCausalLM(nn.Module):
         scalar_lr: float = 0.5,
         weight_decay: float = 0.2,
         adam_betas: tuple[float, float] = (0.8, 0.95),
+        matrix_optimizer: str = "muon",
         compile_steps: bool = False,
     ) -> torch.optim.Optimizer:
         from ..optim import MuonAdamW
+
+        if matrix_optimizer not in {"muon", "adamw"}:
+            raise ValueError("matrix_optimizer must be 'muon' or 'adamw'")
 
         model_dim = self.config.n_embd
         matrix_params = list(self.model.transformer.h.parameters())
@@ -376,6 +380,7 @@ class NanoGPTForCausalLM(nn.Module):
         param_groups: list[dict[str, object]] = [
             {
                 "kind": "adamw",
+                "role": "lm_head",
                 "params": lm_head_params,
                 "lr": unembedding_lr * dmodel_lr_scale,
                 "betas": adam_betas,
@@ -384,6 +389,7 @@ class NanoGPTForCausalLM(nn.Module):
             },
             {
                 "kind": "adamw",
+                "role": "embedding",
                 "params": embedding_params,
                 "lr": embedding_lr * dmodel_lr_scale,
                 "betas": adam_betas,
@@ -392,6 +398,7 @@ class NanoGPTForCausalLM(nn.Module):
             },
             {
                 "kind": "adamw",
+                "role": "value_embedding",
                 "params": value_embedding_params,
                 "lr": embedding_lr * dmodel_lr_scale,
                 "betas": adam_betas,
@@ -400,6 +407,7 @@ class NanoGPTForCausalLM(nn.Module):
             },
             {
                 "kind": "adamw",
+                "role": "resid_scalar",
                 "params": resid_params,
                 "lr": scalar_lr * 0.01,
                 "betas": adam_betas,
@@ -408,6 +416,7 @@ class NanoGPTForCausalLM(nn.Module):
             },
             {
                 "kind": "adamw",
+                "role": "x0_scalar",
                 "params": x0_params,
                 "lr": scalar_lr,
                 "betas": (0.96, 0.95),
@@ -417,17 +426,31 @@ class NanoGPTForCausalLM(nn.Module):
         ]
         for shape in sorted({p.shape for p in matrix_params}, key=tuple):
             group_params = [p for p in matrix_params if p.shape == shape]
-            param_groups.append(
-                {
-                    "kind": "muon",
-                    "params": group_params,
-                    "lr": matrix_lr,
-                    "momentum": 0.95,
-                    "ns_steps": 5,
-                    "beta2": 0.95,
-                    "weight_decay": weight_decay,
-                }
-            )
+            if matrix_optimizer == "muon":
+                param_groups.append(
+                    {
+                        "kind": "muon",
+                        "role": "matrix",
+                        "params": group_params,
+                        "lr": matrix_lr,
+                        "momentum": 0.95,
+                        "ns_steps": 5,
+                        "beta2": 0.95,
+                        "weight_decay": weight_decay,
+                    }
+                )
+            else:
+                param_groups.append(
+                    {
+                        "kind": "adamw",
+                        "role": "matrix",
+                        "params": group_params,
+                        "lr": matrix_lr,
+                        "betas": adam_betas,
+                        "eps": 1e-10,
+                        "weight_decay": weight_decay,
+                    }
+                )
         optimizer = MuonAdamW(param_groups, compile_steps=compile_steps)
         for group in optimizer.param_groups:
             group["initial_lr"] = group["lr"]

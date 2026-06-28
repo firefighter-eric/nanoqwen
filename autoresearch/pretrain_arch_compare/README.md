@@ -64,6 +64,15 @@ Run the default comparison:
 bash autoresearch/pretrain_arch_compare/run.sh
 ```
 
-Results are written under `out/autoresearch/pretrain_arch_compare*/` as
-`results.jsonl` and `results.csv`, with each experiment's checkpoint and log in
-its own subdirectory.
+Run the NanoGPT optimizer ablation suite:
+
+```bash
+PYTORCH_ALLOC_CONF=expandable_segments:True uv run python -m autoresearch.pretrain_arch_compare run-suite \
+  --config autoresearch/pretrain_arch_compare/optimizer_ablations.json
+```
+
+Results are written under each suite's configured `output_root`, such as
+`out/autoresearch/pretrain_arch_compare*/` or
+`out/autoresearch/nanogpt_optimizer_ablations`, as `results.jsonl` and
+`results.csv`, with each experiment's checkpoint and log in its own
+subdirectory.
